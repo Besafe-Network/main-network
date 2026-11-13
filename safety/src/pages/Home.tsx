@@ -30,7 +30,7 @@ import ApiKeyApplication from '../components/ApiKeyApplication';
 import { Link } from 'react-router-dom';
 
 export default function Home() {
-  const [stats, setStats] = useState({ userCount: 0, banCount: 0, guildCount: 0 });
+  const [stats, setStats] = useState({ userCount: 0, banCount: 0, guildCount: 0, serverCount: 0 });
   const [devTab, setDevTab] = useState<'info' | 'apply'>('info');
 
   useEffect(() => {
@@ -115,6 +115,17 @@ export default function Home() {
             <AlertCircle className="w-5 h-5" />
             Report a User
           </Link>
+          <a
+            href="https://top.gg/bot/1480627580636893356"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="bg-[#1e232c] text-white px-8 py-4 font-mono text-sm uppercase tracking-widest hover:bg-[#2b2f36] transition-colors flex items-center justify-center gap-2 font-bold border-2 border-[#141414] dark:border-zinc-700"
+          >
+            <svg viewBox="0 0 24 24" className="w-5 h-5 fill-current" aria-hidden="true">
+              <path d="M12 2 4 5v6c0 5.25 3.4 10.15 8 11.35C16.6 21.15 20 16.25 20 11V5l-8-3Zm-1.2 14.4-3.3-3.3 1.4-1.4 1.9 1.9 4.3-4.3 1.4 1.4-5.7 5.7Z"/>
+            </svg>
+            View on top.gg
+          </a>
           <Link 
             to="/communities" 
             className="bg-white dark:bg-zinc-900 text-[#141414] dark:text-zinc-100 border-2 border-[#141414] dark:border-zinc-700 px-6 py-4 font-mono text-sm uppercase tracking-widest hover:bg-[#141414] hover:text-white dark:hover:bg-zinc-800 transition-all flex items-center gap-2 shadow-[-4px_4px_0px_0px_rgba(20,20,20,1)] dark:shadow-[-4px_4px_0px_0px_rgba(0,0,0,0.5)] hover:shadow-none font-bold"
@@ -143,7 +154,7 @@ export default function Home() {
           <p className="font-mono text-xs uppercase tracking-widest opacity-50">Global Bans</p>
         </div>
         <div className="space-y-2">
-          <span className="font-mono text-4xl sm:text-5xl font-bold">{formatCount(stats.guildCount)}</span>
+          <span className="font-mono text-4xl sm:text-5xl font-bold">{formatCount(stats.serverCount || stats.guildCount)}</span>
           <p className="font-mono text-xs uppercase tracking-widest opacity-50">Servers Protected</p>
         </div>
       </section>

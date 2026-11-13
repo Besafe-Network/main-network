@@ -579,6 +579,12 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
       .setContexts([0, 1, 2]),
 
     new SlashCommandBuilder()
+      .setName('vote')
+      .setDescription('Vote for BeSafe Network on top.gg to support the community')
+      .setIntegrationTypes([0, 1])
+      .setContexts([0, 1, 2]),
+
+    new SlashCommandBuilder()
       .setName('age-verify')
       .setDescription('Verify your age securely via manual staff review')
       .setIntegrationTypes([0, 1])
@@ -992,6 +998,26 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
     applyMainBotShardPresence(readyShardId);
   });
 
+  const postTopggServerCount = async () => {
+    try {
+      if (!client.user?.id || !process.env.DISCORD_TOKEN) return;
+      const shardCount = (client.options as any)?.shardCount || shardConfig?.shardCount || 1;
+      await fetch(`https://top.gg/api/bots/${client.user.id}/stats`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: process.env.DISCORD_TOKEN,
+        },
+        body: JSON.stringify({
+          server_count: client.guilds.cache.size,
+          shard_count: shardCount,
+        }),
+      });
+    } catch (err: any) {
+      console.warn('[Top.gg] Failed to post server count:', err?.message || err);
+    }
+  };
+
   client.on(Events.ClientReady, async () => {
     console.log(`Logged in as ${client.user?.tag}!`);
     
@@ -999,6 +1025,10 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
     applyMainBotShardPresence();
     if (presenceUpdateInterval) clearInterval(presenceUpdateInterval);
     presenceUpdateInterval = setInterval(() => applyMainBotShardPresence(), 5 * 60 * 1000);
+
+    // Report server count to top.gg on boot and every 30 minutes
+    void postTopggServerCount();
+    setInterval(() => void postTopggServerCount(), 30 * 60 * 1000);
 
     setTimeout(() => void scanAndBanCustomBanlistDiscordUsers(), 20000);
     setInterval(() => void scanAndBanCustomBanlistDiscordUsers(), 2 * 60 * 1000);
@@ -1322,7 +1352,7 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
 
       if (commandName === 'help') {
         return interaction.reply({
-          content: 'Use `/info` for BeSafe Network information. Commands include `/check`, `/report`, `/setup`, `/verify`, `/link`, `/age-verify`, `/backup`, `/radio`, `/reputation`, and moderation tools.',
+          content: 'Use `/info` for BeSafe Network information. Commands include `/check`, `/report`, `/setup`, `/verify`, `/link`, `/vote`, `/age-verify`, `/backup`, `/radio`, `/reputation`, and moderation tools.',
           ephemeral: true,
         });
       }
@@ -2017,7 +2047,7 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
             },
             {
               name: '📜 Command Reference',
-              value: `• \`/check <user>\` — View global standing & ban history\n• \`/report [user]\` — Submit evidence on web portal\n• \`/reputation <user> <+1/-1>\` — Rate user reputation\n• \`/warn <user> <reason>\` — Issue moderation warning\n• \`/radio play\` — Play CreatorPlaza Radio in VC\n• \`/np\` — Now playing track & artist\n• \`/volume <1-100>\` — Set radio volume\n• \`/stop\` — Stop radio & disconnect\n• \`/verify\` — Server member verification\n${isAgeVerifyOff ? '• `[DISABLED]` `/age-verify` — (Unsynced / Disabled by Admin)\n' : '• `/age-verify` — Launch manual age verification\n'}• \`/agerole\` — Sync verified age role\n• \`/age-delete\` — Self-service deletion of your own age verification data & records\n• \`/backup <create|list|restore>\` — Server anti-raid backup system\n• \`/setup\` — Link server to web dashboard`,
+              value: `• \`/check <user>\` — View global standing & ban history\n• \`/report [user]\` — Submit evidence on web portal\n• \`/reputation <user> <+1/-1>\` — Rate user reputation\n• \`/warn <user> <reason>\` — Issue moderation warning\n• \`/radio play\` — Play CreatorPlaza Radio in VC\n• \`/np\` — Now playing track & artist\n• \`/volume <1-100>\` — Set radio volume\n• \`/stop\` — Stop radio & disconnect\n• \`/verify\` — Server member verification\n${isAgeVerifyOff ? '• `[DISABLED]` `/age-verify` — (Unsynced / Disabled by Admin)\n' : '• `/age-verify` — Launch manual age verification\n'}• \`/agerole\` — Sync verified age role\n• \`/age-delete\` — Self-service deletion of your own age verification data & records\n• \`/backup <create|list|restore>\` — Server anti-raid backup system\n• \`/setup\` — Link server to web dashboard\n• \`/vote\` — Vote for BeSafe on top.gg`,
               inline: false
             },
             {
@@ -2036,6 +2066,15 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
         await interaction.reply({
           embeds: [infoEmbed],
           ephemeral: false
+        }).catch(() => null);
+      }
+
+      if (commandName === 'vote') {
+        const botId = targetClient.user?.id || client.user?.id || process.env.DISCORD_CLIENT_ID || '';
+        const voteUrl = botId ? `https://top.gg/bot/${botId}/vote` : 'https://top.gg';
+        return interaction.reply({
+          content: `🗳️ **Support BeSafe Network!**\nVoting helps keep the bots online and the banlist growing.\n\n👉 **[Vote on top.gg](${voteUrl})**\nYou can vote once every 12 hours — thank you!`,
+          ephemeral: false,
         }).catch(() => null);
       }
 

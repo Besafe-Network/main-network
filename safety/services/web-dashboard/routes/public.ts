@@ -98,6 +98,32 @@ export function registerPublicRoutes(app: express.Express, context: any) {
   __filename
   } = context;
 
+  // Cached top.gg server count lookup (5 minute TTL)
+  let topggCache: { ts: number; count: number | null } = { ts: 0, count: null };
+  async function fetchTopggServerCount(): Promise<number | null> {
+    const botId = process.env.DISCORD_CLIENT_ID || '1480627580636893356';
+    if (Date.now() - topggCache.ts < 5 * 60 * 1000) return topggCache.count;
+    try {
+      const headers: Record<string, string> = {};
+      if (process.env.DISCORD_TOKEN) headers.Authorization = process.env.DISCORD_TOKEN;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      try {
+        const response = await fetch(`https://top.gg/api/bots/${botId}/stats`, { headers, signal: controller.signal });
+        if (response.ok) {
+          const data: any = await response.json();
+          const count = typeof data?.server_count === 'number' ? data.server_count : null;
+          topggCache = { ts: Date.now(), count };
+          return count;
+        }
+      } finally {
+        clearTimeout(timeout);
+      }
+    } catch {}
+    topggCache = { ts: Date.now(), count: topggCache.count };
+    return topggCache.count;
+  }
+
 const findUserByQuery = sharedFindUserByQuery;
 
   // ==========================================
@@ -852,8 +878,9 @@ const findUserByQuery = sharedFindUserByQuery;
       const liveDiscordMembers = discordGuilds.reduce((total, guild) => total + (guild.memberCount || 0), 0);
 
       const userCount = Math.max(liveDiscordMembers, totalUsersInDb + (guildCount * 150), 100);
+      const serverCount = await fetchTopggServerCount();
 
-      res.json({ userCount, banCount, guildCount, trustedCount: trustedUserCount });
+      res.json({ userCount, banCount, guildCount, serverCount, trustedCount: trustedUserCount });
     } catch (e) {
       res.status(500).json({ error: 'Failed to fetch stats' });
     }
