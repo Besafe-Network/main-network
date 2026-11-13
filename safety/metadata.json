@@ -1,0 +1,10 @@
+{
+  "name": "BeSafe Network",
+  "description": "A global trust and safety network for Discord and VRChat with age verification, reputation tracking, and cross-platform moderation.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

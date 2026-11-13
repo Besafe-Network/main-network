@@ -1,0 +1,362 @@
+import { Client } from 'discord.js';
+import * as models from '../shared/models';
+import { config } from '../shared/config';
+import { notifyAdmins } from '../shared/email';
+import { restoreGuildBackup } from '../web-dashboard/backup-restore';
+import { findUserByQuery } from '../web-dashboard/user-lookup';
+
+export function createDiscordRuntimeContext(fetchVRChatDisplayName: (vrchatUserId: string) => Promise<string | null>) {
+  const clientRef: { current?: Client } = {};
+  const guildClientResolverRef: { current?: (guildId: string) => any } = {};
+
+  async function cleanupUserDatabaseForTrustedOnly() {
+    try {
+      await models.User.updateMany({}, {
+        $unset: {
+          isBanned: 1,
+          banReason: 1,
+          banType: 1,
+          bannedBy: 1,
+          bannedAt: 1,
+          banExpiresAt: 1,
+          banCaseId: 1,
+        },
+      });
+      const result = await models.User.deleteMany({
+        isTrusted: { $ne: true },
+        isAgeVerified: { $ne: true },
+        $or: [{ reputation: { $in: [0, null] } }, { reputation: { $exists: false } }],
+        $and: [{ 'warnings.0': { $exists: false } }],
+      });
+      console.log(`[User DB Cleanup] Purged ${result.deletedCount || 0} non-trusted records.`);
+      return result.deletedCount || 0;
+    } catch (error) {
+      console.error('[User DB Cleanup Error]:', error);
+      return 0;
+    }
+  }
+
+  async function checkAndAutoVerifyFromDiscord(options: {
+    email?: string | null;
+    adminId?: any;
+    discordId?: string | null;
+  }) {
+    try {
+      const email = options.email ? String(options.email).trim().toLowerCase() : null;
+      const discordId = options.discordId ? String(options.discordId).trim() : null;
+      if (!email && !discordId) return null;
+
+      let verifiedUser: any = email
+        ? await models.User.findOne({ email, isAgeVerified: true })
+        : null;
+      if (!verifiedUser && discordId) {
+        verifiedUser = await models.User.findOne({ id: discordId, isAgeVerified: true });
+      }
+
+      let approvedRequest: any = email
+        ? await models.VerificationRequest.findOne({ email, status: 'approved' }).sort({ updatedAt: -1 })
+        : null;
+      if (!approvedRequest && discordId) {
+        approvedRequest = await models.VerificationRequest.findOne({ userId: discordId, status: 'approved' }).sort({ updatedAt: -1 });
+      }
+      if (!verifiedUser && approvedRequest?.userId) {
+        verifiedUser = await models.User.findOne({ id: approvedRequest.userId, isAgeVerified: true });
+      }
+      if (!verifiedUser && !approvedRequest) return null;
+
+      const rawDob = verifiedUser?.dob || approvedRequest?.dob;
+      const dob = rawDob ? new Date(rawDob) : new Date('2000-01-01');
+      const ageVerifiedAt = verifiedUser?.ageVerifiedAt || approvedRequest?.updatedAt || new Date();
+      const matchedDiscordId = verifiedUser?.id || (approvedRequest?.source === 'discord' ? approvedRequest.userId : discordId);
+      const adminQuery = options.adminId
+        ? { _id: options.adminId }
+        : email
+          ? { email }
+          : matchedDiscordId
+            ? { discordId: matchedDiscordId }
+            : null;
+      let admin: any = null;
+      if (adminQuery) {
+        admin = await models.Admin.findOneAndUpdate(adminQuery, {
+          $set: {
+            isAgeVerified: true,
+            dob,
+            ageVerifiedAt,
+            isEmailVerified: true,
+            ...(matchedDiscordId ? { discordId: matchedDiscordId } : {}),
+          },
+        }, { new: true });
+      }
+
+      if (matchedDiscordId) {
+        await models.User.findOneAndUpdate({ id: matchedDiscordId }, {
+          $set: { isAgeVerified: true, dob, ageVerifiedAt, ...(email ? { email } : {}) },
+        }, { upsert: true });
+      }
+
+      const existingRequest = await models.VerificationRequest.findOne({
+        $or: [
+          ...(email ? [{ email, status: 'approved' as const }] : []),
+          ...(matchedDiscordId ? [{ userId: matchedDiscordId, status: 'approved' as const }] : []),
+        ],
+      });
+      if (!existingRequest && (email || matchedDiscordId)) {
+        await new models.VerificationRequest({
+          userId: matchedDiscordId || admin?._id?.toString() || 'web',
+          username: admin?.username || verifiedUser?.username || '',
+          email: email || verifiedUser?.email || '',
+          source: 'discord',
+          dob,
+          status: 'approved',
+          adminNotes: 'Auto-verified: email matches already verified Discord user',
+        }).save().catch(() => null);
+      }
+      await new models.Log({
+        action: 'AUTO_AGE_VERIFIED',
+        adminId: 'SYSTEM',
+        targetId: email || matchedDiscordId || 'User',
+        details: `Auto-verified account: email ${email || 'N/A'} matches verified Discord user (${matchedDiscordId || 'N/A'}). DOB: ${dob.toISOString().split('T')[0]}`,
+      }).save().catch(() => null);
+      return { matched: true, email: email || verifiedUser?.email || approvedRequest?.email, discordId: matchedDiscordId, dob, ageVerifiedAt, admin, verifiedDiscordUser: verifiedUser, approvedReq: approvedRequest };
+    } catch (error) {
+      console.error('Error in checkAndAutoVerifyFromDiscord:', error);
+      return null;
+    }
+  }
+
+  function isGlobalBanSyncReason(reason?: string | null): boolean {
+    const value = String(reason || '').toLowerCase();
+    if (!value) return false;
+    if (value.includes('custom banlist')) return false;
+    if (value.includes('local auto-ban') || value.includes('warning threshold') || value.includes('reputation below')) return false;
+    return value.includes('ban case #') || value.includes('global ban') || value.includes('[api:') || value.startsWith('besafe network:') || value.startsWith('ban case #');
+  }
+
+  async function getDesiredGlobalDiscordBans() {
+    const desired = new Map<string, string>();
+    const activeCases = await models.BanCase.find({ status: 'active' }).catch(() => []);
+    for (const banCase of activeCases) {
+      const reason = `Ban Case #${banCase.caseNumber}: ${banCase.reason}`;
+      for (const account of banCase.discordAccounts || []) {
+        const id = String(account?.discordId || '').trim();
+        if (id && models.isValidDiscordSnowflake(id) && !desired.has(id)) {
+          desired.set(id, reason);
+        }
+      }
+    }
+
+    const legacyBannedUsers = await models.User.find({ isBanned: true })
+      .select('id isTrusted banReason')
+      .lean()
+      .catch(() => []);
+    for (const user of legacyBannedUsers) {
+      const id = String((user as any).id || '').trim();
+      if (!id || !models.isValidDiscordSnowflake(id) || (user as any).isTrusted) continue;
+      if (!desired.has(id)) {
+        desired.set(id, (user as any).banReason || 'Global Banlist Violation');
+      }
+    }
+
+    const candidateIds = [...desired.keys()];
+    if (candidateIds.length > 0) {
+      const knownUsers = await models.User.find({ id: { $in: candidateIds } })
+        .select('id isTrusted')
+        .lean()
+        .catch(() => []);
+      for (const knownUser of knownUsers) {
+        if ((knownUser as any).isTrusted) desired.delete(String((knownUser as any).id));
+      }
+    }
+
+    return { activeCases, desired };
+  }
+
+  async function syncAllBansAcrossPlatforms() {
+    const discordClient = clientRef.current;
+    const { activeCases, desired } = await getDesiredGlobalDiscordBans();
+    const enabledGuilds = await models.Guild.find({ 'settings.autoBanEnabled': true }).catch(() => []);
+    let discordBansCount = 0;
+    let discordUnbansCount = 0;
+    let skippedCount = 0;
+
+    for (const guildData of enabledGuilds) {
+      const guildId = guildData.id;
+      const targetClient = guildClientResolverRef.current?.(guildId) || discordClient;
+      if (!targetClient?.guilds?.cache) continue;
+      const guild = targetClient.guilds.cache.get(guildId);
+      if (!guild) continue;
+
+      const selectionMode = guildData.settings?.banlistSelectionMode || 'global';
+      const allowGlobalBans = selectionMode !== 'custom';
+      const allowAutoUnban = guildData.settings?.autoUnbanDiscordEnabled !== false;
+      const channelId = guildData.settings?.staffChannelId || guildData.settings?.logChannelId;
+      const channel = channelId ? guild.channels.cache.get(channelId) : null;
+
+      let existingBans: any = null;
+      try {
+        existingBans = await guild.bans.fetch();
+      } catch {
+        existingBans = null;
+      }
+      const bannedIds = existingBans ? new Set(existingBans.keys()) : null;
+
+      if (allowGlobalBans) {
+        for (const [userId, reason] of desired) {
+          let alreadyBanned = false;
+          if (bannedIds) {
+            alreadyBanned = bannedIds.has(userId);
+          } else {
+            try {
+              alreadyBanned = !!(await guild.bans.fetch(userId));
+            } catch {
+              alreadyBanned = false;
+            }
+          }
+          if (alreadyBanned) continue;
+
+          try {
+            await guild.bans.create(userId, { reason: `BeSafe Network Global Ban: ${reason}` });
+            discordBansCount += 1;
+            if (channel?.isTextBased()) {
+              await channel.send(`🚨 **Global Ban Enforced**: User ${userId} was automatically banned.\nReason: ${reason}`).catch(() => null);
+            }
+          } catch {
+            skippedCount += 1;
+          }
+        }
+      }
+
+      if (allowAutoUnban && existingBans) {
+        for (const ban of existingBans.values()) {
+          const bannedUserId = ban?.user?.id || (ban as any)?.userId;
+          if (!bannedUserId || desired.has(bannedUserId)) continue;
+          if (!isGlobalBanSyncReason(ban?.reason)) continue;
+          try {
+            await guild.members.unban(bannedUserId, 'BeSafe Network: Global ban lifted by synchronization');
+            discordUnbansCount += 1;
+            if (channel?.isTextBased()) {
+              await channel.send(`✅ **Global Unban Enforced**: User ${bannedUserId} was automatically unbanned because they are no longer globally banned.`).catch(() => null);
+            }
+          } catch {
+            skippedCount += 1;
+          }
+        }
+      }
+    }
+
+    return { activeCasesCount: activeCases.length, discordBansCount, discordUnbansCount, vrchatBansCount: 0, skippedCount, discordSkippedCount: skippedCount, vrchatSkippedCount: 0 };
+  }
+
+  async function downloadImageForScan(url: string): Promise<Buffer | null> {
+    try {
+      const targetUrl = url.startsWith('/') ? `${config.appUrl.replace(/\/$/, '')}${url}` : url;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      try {
+        const response = await fetch(targetUrl, {
+          signal: controller.signal,
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BeSafe-NSFW-Scanner/1.0' },
+        });
+        if (!response.ok) return null;
+        const image = await response.arrayBuffer();
+        if (image.byteLength > 15 * 1024 * 1024) return null;
+        return Buffer.from(image);
+      } finally {
+        clearTimeout(timeout);
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  let nsfwModelPromise: Promise<{ tf: typeof import('@tensorflow/tfjs'); model: any } | null> | null = null;
+
+  function getNsfwModel() {
+    if (!nsfwModelPromise) {
+      nsfwModelPromise = Promise.all([
+        import('@tensorflow/tfjs'),
+        import('nsfwjs'),
+      ])
+        .then(async ([tf, nsfwjs]) => ({ tf, model: await nsfwjs.load('InceptionV3', { size: 299 }) }))
+        .catch((error: any) => {
+          console.error('[NSFW Blocker] Failed to load NSFWJS model; NSFW scanning disabled until next retry:', error?.message || error);
+          nsfwModelPromise = null;
+          return null;
+        });
+    }
+    return nsfwModelPromise;
+  }
+
+  async function scanImageBufferWithNsfwjs(buffer: Buffer, threshold = 0.65) {
+    let tensor3d: any = null;
+    try {
+      const loaded = await getNsfwModel();
+      if (!loaded) return null;
+      const { tf, model } = loaded;
+      tensor3d = await models.decodeImageBufferToTensor3D(tf, buffer);
+      if (!tensor3d) return null;
+      const predictions = await model.classify(tensor3d);
+      const porn = predictions.find((item: any) => item.className === 'Porn')?.probability || 0;
+      const hentai = predictions.find((item: any) => item.className === 'Hentai')?.probability || 0;
+      const relevant = predictions.filter((item: any) => item.className !== 'Sexy');
+      const top = [...relevant].sort((left: any, right: any) => right.probability - left.probability)[0];
+      let isNsfw = false;
+      let topCategory = 'Neutral';
+      let confidence = 0;
+      let flagReason = '';
+      if (porn >= threshold) {
+        isNsfw = true;
+        topCategory = 'Pornography';
+        confidence = porn;
+        flagReason = `Pornographic visual content detected (${(porn * 100).toFixed(1)}% confidence)`;
+      } else if (hentai >= threshold) {
+        isNsfw = true;
+        topCategory = 'Hentai / Illustrated Explicit';
+        confidence = hentai;
+        flagReason = `Explicit illustrated/anime content detected (${(hentai * 100).toFixed(1)}% confidence)`;
+      } else {
+        topCategory = top?.className || 'Neutral';
+        confidence = top?.probability || 0;
+      }
+      return {
+        isNsfw,
+        topCategory,
+        confidence,
+        predictions,
+        flagReason,
+      };
+    } catch (error: any) {
+      console.warn('[NSFW Blocker] Image decoding or classification skipped:', error?.message || error);
+      return null;
+    } finally {
+      try {
+        if (tensor3d) tensor3d.dispose();
+      } catch {}
+    }
+  }
+
+  return {
+    context: {
+      ...models,
+      cleanupUserDatabaseForTrustedOnly,
+      syncAllBansAcrossPlatforms,
+      findUserByQuery,
+      serviceClient: { fetchVRChatDisplayName },
+      resolveDiscordUser: models.resolveDiscordUser,
+      getWatchlistAvatar: models.getWatchlistAvatar,
+      checkAndAutoVerifyFromDiscord,
+      restoreGuildBackup,
+      notifyAdmins,
+      downloadImageForScan,
+      scanImageBufferWithNsfwjs,
+      serviceName: 'discord-bot',
+      setSyncDiscordCommandsRef: () => {},
+    },
+    setClient(client: Client) {
+      clientRef.current = client;
+    },
+    setGuildClientResolver(resolver?: (guildId: string) => any) {
+      guildClientResolverRef.current = resolver;
+    },
+  };
+}

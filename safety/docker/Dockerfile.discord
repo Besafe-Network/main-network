@@ -1,0 +1,20 @@
+# ==========================================
+# Dockerfile: Discord Bot Shard Worker Service
+# ==========================================
+ARG RUNTIME_DEPS_IMAGE=node:22-bookworm-slim
+FROM ${RUNTIME_DEPS_IMAGE} AS runner
+
+WORKDIR /app
+ENV NODE_ENV=production \
+	SERVICE_NAME=discord-bot \
+	HOST=0.0.0.0 \
+	DISCORD_BOT_PORT=3002
+
+COPY --chown=node:node services ./services
+COPY --chown=node:node emailService.ts .env* ./
+
+EXPOSE 3002
+
+USER node
+
+CMD ["./node_modules/.bin/tsx", "services/discord-bot/index.ts"]

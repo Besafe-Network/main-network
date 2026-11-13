@@ -1,0 +1,51 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile with Discord, VRChat, reputation, and ban details",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique Discord snowflake ID or VRChat identifier" },
+        "username": { "type": "string", "description": "User handle or display tag" },
+        "reputation": { "type": "number", "description": "Community reputation score" },
+        "isTrusted": { "type": "boolean", "description": "Whether user is on trusted whitelist" },
+        "isBanned": { "type": "boolean", "description": "Global ban enforcement status" },
+        "banReason": { "type": "string", "description": "Reason for global ban" },
+        "banCaseId": { "type": "string", "description": "Associated Ban Case ID if linked" },
+        "vrchatUserId": { "type": "string", "description": "Connected primary VRChat User ID" },
+        "vrchatUsername": { "type": "string", "description": "Connected primary VRChat username" }
+      },
+      "required": ["id"]
+    },
+    "BanCase": {
+      "title": "BanCase",
+      "description": "Centralized ban case linking multiple Discord and VRChat accounts",
+      "type": "object",
+      "properties": {
+        "caseNumber": { "type": "string", "description": "Human-readable case reference (e.g. CASE-1024)" },
+        "title": { "type": "string", "description": "Case title or identifier" },
+        "reason": { "type": "string", "description": "Grounds and violation details for ban" },
+        "severity": { "type": "string", "enum": ["permanent", "temporary", "critical", "warning"], "description": "Enforcement severity" },
+        "status": { "type": "string", "enum": ["active", "lifted"], "description": "Ban case status" },
+        "discordAccounts": { "type": "array", "description": "List of linked Discord accounts" },
+        "vrchatAccounts": { "type": "array", "description": "List of linked VRChat accounts" },
+        "evidenceLinks": { "type": "array", "description": "Evidence URLs and dossiers" },
+        "notes": { "type": "string", "description": "Internal administrative notes" },
+        "bannedBy": { "type": "string", "description": "Staff member who issued the ban" },
+        "unbannedBy": { "type": "string", "description": "Staff member who lifted the ban" },
+        "unbanReason": { "type": "string", "description": "Reason for unbanning all accounts" }
+      },
+      "required": ["caseNumber", "reason", "status"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Global users and reputation data"
+    },
+    "/ban_cases/{caseId}": {
+      "schema": { "$ref": "#/entities/BanCase" },
+      "description": "Global ban cases containing multi-platform accounts"
+    }
+  }
+}

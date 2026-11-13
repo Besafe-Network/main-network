@@ -1,0 +1,116 @@
+services:
+  # --- MongoDB Database ---
+  mongo:
+    image: mongo:7-jammy
+    container_name: besafe-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: besafe
+    volumes:
+      - mongo-data:/data/db
+
+  dependencies:
+    image: besafe-node-dependencies:latest
+    profiles: [build-dependencies]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dependencies
+
+  dashboard-build-dependencies:
+    image: besafe-dashboard-build-dependencies:latest
+    profiles: [build-dependencies]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dashboard-build-dependencies
+
+  # --- Service 1: Web Dashboard & Main API ---
+  web-dashboard:
+    image: git.chillboiostudios.com/chillboio-studios-internal/besafe-network/web-dashboard:latest
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dashboard
+      additional_contexts:
+        dependencies: service:dependencies
+        dashboard-build-dependencies: service:dashboard-build-dependencies
+      args:
+        RUNTIME_DEPS_IMAGE: dependencies
+        DASHBOARD_BUILD_DEPS_IMAGE: dashboard-build-dependencies
+    container_name: besafe-dashboard
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - SERVICE_NAME=web-dashboard
+      - PORT=3000
+      - MONGO_URI=${MONGO_URI:-mongodb://mongo:27017/besafe}
+      - MONGODB_URI=${MONGODB_URI:-}
+      - JWT_SECRET=${JWT_SECRET:-besafe-super-secret-jwt-key}
+      - APP_URL=${APP_URL:-http://localhost:3000}
+      - WORKER_AUTH_TOKEN=${WORKER_AUTH_TOKEN:?Set WORKER_AUTH_TOKEN in your environment}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-}
+      - SMTP_SECURE=${SMTP_SECURE:-}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASS=${SMTP_PASS:-}
+      - SMTP_FROM=${SMTP_FROM:-}
+      - MAIL_HOST=${MAIL_HOST:-}
+      - MAIL_PORT=${MAIL_PORT:-}
+      - MAIL_SECURE=${MAIL_SECURE:-}
+      - MAIL_USER=${MAIL_USER:-}
+      - MAIL_PASS=${MAIL_PASS:-}
+      - MAIL_FROM=${MAIL_FROM:-}
+    depends_on:
+      - mongo
+
+  # --- Service 2: VRChat Bot API & Worker ---
+  vrchat-bot:
+    image: git.chillboiostudios.com/chillboio-studios-internal/besafe-network/vrchat-bot:latest
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.vrchat
+      additional_contexts:
+        dependencies: service:dependencies
+      args:
+        RUNTIME_DEPS_IMAGE: dependencies
+    container_name: besafe-vrchat-bot
+    restart: unless-stopped
+    environment:
+      - SERVICE_NAME=vrchat-bot
+      - VRCHAT_BOT_PORT=3001
+      - MONGO_URI=mongodb://mongo:27017/besafe
+      - VRC_INSTANCE_ID=0
+      - VRC_TOTAL_INSTANCES=1
+      - DASHBOARD_SOCKET_URL=http://web-dashboard:3000
+      - WORKER_AUTH_TOKEN=${WORKER_AUTH_TOKEN:?Set WORKER_AUTH_TOKEN in your environment}
+    depends_on:
+      - mongo
+
+  # --- Service 3: Discord Bot Service (Shard 0) ---
+  discord-bot:
+    image: git.chillboiostudios.com/chillboio-studios-internal/besafe-network/discord-bot:latest
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.discord
+      additional_contexts:
+        dependencies: service:dependencies
+      args:
+        RUNTIME_DEPS_IMAGE: dependencies
+    container_name: besafe-discord-bot
+    restart: unless-stopped
+    environment:
+      - SERVICE_NAME=discord-bot
+      - DISCORD_BOT_PORT=3002
+      - MONGO_URI=mongodb://mongo:27017/besafe
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - DISCORD_SHARDING_MODE=stateful
+      - SHARD_ID=0
+      - SHARD_COUNT=1
+      - DASHBOARD_SOCKET_URL=http://web-dashboard:3000
+      - WORKER_AUTH_TOKEN=${WORKER_AUTH_TOKEN:?Set WORKER_AUTH_TOKEN in your environment}
+    depends_on:
+      - mongo
+
+volumes:
+  mongo-data:

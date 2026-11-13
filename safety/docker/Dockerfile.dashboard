@@ -1,0 +1,28 @@
+# ==========================================
+# Dockerfile: Web Dashboard & Main API Service
+# ==========================================
+ARG DASHBOARD_BUILD_DEPS_IMAGE=node:22-bookworm-slim
+ARG RUNTIME_DEPS_IMAGE=node:22-bookworm-slim
+FROM ${DASHBOARD_BUILD_DEPS_IMAGE} AS builder
+
+COPY . .
+RUN npm run build
+
+FROM ${RUNTIME_DEPS_IMAGE} AS runner
+
+WORKDIR /app
+ENV NODE_ENV=production \
+	SERVICE_NAME=web-dashboard \
+	HOST=0.0.0.0 \
+	PORT=3000
+
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/index.html ./index.html
+COPY --from=builder /app/services ./services
+COPY --from=builder /app/server.ts ./server.ts
+
+EXPOSE 3000
+
+USER node
+
+CMD ["node", "dist/server.mjs"]

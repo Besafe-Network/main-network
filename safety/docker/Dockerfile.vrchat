@@ -1,0 +1,19 @@
+# ==========================================
+# Dockerfile: VRChat Bot API & Worker Service
+# ==========================================
+ARG RUNTIME_DEPS_IMAGE=node:22-bookworm-slim
+FROM ${RUNTIME_DEPS_IMAGE} AS runner
+
+WORKDIR /app
+ENV NODE_ENV=production \
+	SERVICE_NAME=vrchat-bot \
+	HOST=0.0.0.0 \
+	VRCHAT_BOT_PORT=3001
+
+COPY --chown=node:node services ./services
+
+EXPOSE 3001
+
+USER node
+
+CMD ["./node_modules/.bin/tsx", "services/vrchat-bot/index.ts"]
