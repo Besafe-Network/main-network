@@ -263,7 +263,16 @@ export function createDiscordRuntimeContext(fetchVRChatDisplayName: (vrchatUserI
     return nsfwModelPromise;
   }
 
-  async function scanImageBufferWithNsfwjs(buffer: Buffer, threshold = 0.65) {
+  // Serialize NSFW scans so only one image is decoded/classified at a time
+  // per process — parallel scans can multiply peak memory and OOM the worker.
+  let nsfwScanQueue: Promise<unknown> = Promise.resolve();
+  function enqueueNsfwScan<T>(task: () => Promise<T>): Promise<T> {
+    const run = nsfwScanQueue.then(task, task);
+    nsfwScanQueue = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  async function scanImageBufferWithNsfwjsInner(buffer: Buffer, threshold = 0.65) {
     let tensor3d: any = null;
     try {
       const loaded = await getNsfwModel();
@@ -309,6 +318,10 @@ export function createDiscordRuntimeContext(fetchVRChatDisplayName: (vrchatUserI
         if (tensor3d) tensor3d.dispose();
       } catch {}
     }
+  }
+
+  function scanImageBufferWithNsfwjs(buffer: Buffer, threshold = 0.65) {
+    return enqueueNsfwScan(() => scanImageBufferWithNsfwjsInner(buffer, threshold));
   }
 
   return {

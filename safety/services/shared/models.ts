@@ -1012,7 +1012,7 @@ export function buildTransparentBanDM(options: TransparentBanDMOptions) {
   return { embeds: [embed] };
 }
 
-const MAX_DECODE_PIXELS = 25_000_000; // ~25MP (e.g. 5000x5000) to bound memory usage
+const MAX_DECODE_PIXELS = 16_777_216; // 4096x4096 to bound memory usage
 
 function pngDimensions(buffer: Buffer): { width: number; height: number } | null {
   // IHDR chunk starts at byte 8: length(4) + "IHDR"(4) + width(4) + height(4)
