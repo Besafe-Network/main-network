@@ -1012,6 +1012,14 @@ export function buildTransparentBanDM(options: TransparentBanDMOptions) {
   return { embeds: [embed] };
 }
 
+const MAX_DECODE_PIXELS = 25_000_000; // ~25MP (e.g. 5000x5000) to bound memory usage
+
+function pngDimensions(buffer: Buffer): { width: number; height: number } | null {
+  // IHDR chunk starts at byte 8: length(4) + "IHDR"(4) + width(4) + height(4)
+  if (buffer.length < 24) return null;
+  return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
+}
+
 export async function decodeImageBufferToTensor3D(tf: any, buffer: Buffer): Promise<any | null> {
   if (!buffer || buffer.length < 8) return null;
 
@@ -1031,6 +1039,8 @@ export async function decodeImageBufferToTensor3D(tf: any, buffer: Buffer): Prom
 
   // PNG magic bytes: 89 50 4E 47 0D 0A 1A 0A
   if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) {
+    const dims = pngDimensions(buffer);
+    if (dims && dims.width * dims.height > MAX_DECODE_PIXELS) return null;
     const pngMod: any = await import('pngjs');
     const PNG = pngMod.PNG || pngMod.default?.PNG || pngMod.default;
     const decoded = PNG.sync.read(buffer);
@@ -1055,6 +1065,7 @@ export async function decodeImageBufferToTensor3D(tf: any, buffer: Buffer): Prom
     const bitsPerPixel = buffer.readUInt16LE(28);
     const topDown = rawHeight < 0;
     const bmpHeight = Math.abs(rawHeight);
+    if (bmpWidth * bmpHeight > MAX_DECODE_PIXELS) return null;
     if (bmpWidth > 0 && bmpHeight > 0 && (bitsPerPixel === 24 || bitsPerPixel === 32)) {
       const bytesPerPixel = bitsPerPixel / 8;
       const rowStride = Math.floor((bitsPerPixel * bmpWidth + 31) / 32) * 4;
@@ -1076,7 +1087,7 @@ export async function decodeImageBufferToTensor3D(tf: any, buffer: Buffer): Prom
     }
   }
 
-  if (!rgbaData || width <= 0 || height <= 0) {
+  if (!rgbaData || width <= 0 || height <= 0 || width * height > MAX_DECODE_PIXELS) {
     return null;
   }
 
