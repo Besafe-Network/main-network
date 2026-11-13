@@ -124,14 +124,6 @@ export function createDiscordRuntimeContext(fetchVRChatDisplayName: (vrchatUserI
     }
   }
 
-  function isGlobalBanSyncReason(reason?: string | null): boolean {
-    const value = String(reason || '').toLowerCase();
-    if (!value) return false;
-    if (value.includes('custom banlist')) return false;
-    if (value.includes('local auto-ban') || value.includes('warning threshold') || value.includes('reputation below')) return false;
-    return value.includes('ban case #') || value.includes('global ban') || value.includes('[api:') || value.startsWith('besafe network:') || value.startsWith('ban case #');
-  }
-
   async function getDesiredGlobalDiscordBans() {
     const desired = new Map<string, string>();
     const activeCases = await models.BanCase.find({ status: 'active' }).catch(() => []);
@@ -176,7 +168,6 @@ export function createDiscordRuntimeContext(fetchVRChatDisplayName: (vrchatUserI
     const { activeCases, desired } = await getDesiredGlobalDiscordBans();
     const enabledGuilds = await models.Guild.find({ 'settings.autoBanEnabled': true }).catch(() => []);
     let discordBansCount = 0;
-    let discordUnbansCount = 0;
     let skippedCount = 0;
 
     for (const guildData of enabledGuilds) {
@@ -188,7 +179,6 @@ export function createDiscordRuntimeContext(fetchVRChatDisplayName: (vrchatUserI
 
       const selectionMode = guildData.settings?.banlistSelectionMode || 'global';
       const allowGlobalBans = selectionMode !== 'custom';
-      const allowAutoUnban = guildData.settings?.autoUnbanDiscordEnabled !== false;
       const channelId = guildData.settings?.staffChannelId || guildData.settings?.logChannelId;
       const channel = channelId ? guild.channels.cache.get(channelId) : null;
 
@@ -226,25 +216,11 @@ export function createDiscordRuntimeContext(fetchVRChatDisplayName: (vrchatUserI
         }
       }
 
-      if (allowAutoUnban && existingBans) {
-        for (const ban of existingBans.values()) {
-          const bannedUserId = ban?.user?.id || (ban as any)?.userId;
-          if (!bannedUserId || desired.has(bannedUserId)) continue;
-          if (!isGlobalBanSyncReason(ban?.reason)) continue;
-          try {
-            await guild.members.unban(bannedUserId, 'BeSafe Network: Global ban lifted by synchronization');
-            discordUnbansCount += 1;
-            if (channel?.isTextBased()) {
-              await channel.send(`✅ **Global Unban Enforced**: User ${bannedUserId} was automatically unbanned because they are no longer globally banned.`).catch(() => null);
-            }
-          } catch {
-            skippedCount += 1;
-          }
-        }
-      }
+      // Unbans are only performed via explicit admin actions (e.g. admin dashboard
+      // unban / ban-case lift), never by this periodic sync.
     }
 
-    return { activeCasesCount: activeCases.length, discordBansCount, discordUnbansCount, vrchatBansCount: 0, skippedCount, discordSkippedCount: skippedCount, vrchatSkippedCount: 0 };
+    return { activeCasesCount: activeCases.length, discordBansCount, discordUnbansCount: 0, vrchatBansCount: 0, skippedCount, discordSkippedCount: skippedCount, vrchatSkippedCount: 0 };
   }
 
   async function downloadImageForScan(url: string): Promise<Buffer | null> {
