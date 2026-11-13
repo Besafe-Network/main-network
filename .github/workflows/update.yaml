@@ -64,6 +64,8 @@ jobs:
             echo "Building dependency images ${DEPENDENCY_TAG}."
             docker build \
               --pull \
+              --provenance=false \
+              --sbom=false \
               --build-arg BUILDKIT_INLINE_CACHE=1 \
               -f safety/docker/Dockerfile.dependencies \
               -t "${RUNTIME_IMAGE}:${DEPENDENCY_TAG}" \
@@ -72,6 +74,8 @@ jobs:
 
             docker build \
               --pull \
+              --provenance=false \
+              --sbom=false \
               --build-arg BUILDKIT_INLINE_CACHE=1 \
               -f safety/docker/Dockerfile.dashboard-build-dependencies \
               -t "${BUILD_IMAGE}:${DEPENDENCY_TAG}" \
@@ -93,6 +97,8 @@ jobs:
 
             echo "--- Building ${image} ---"
             docker build \
+              --provenance=false \
+              --sbom=false \
               --build-arg BUILDKIT_INLINE_CACHE=1 \
               "${build_args[@]}" \
               -f "safety/docker/${dockerfile}" \
