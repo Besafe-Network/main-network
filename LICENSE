@@ -1,0 +1,58 @@
+BeSafe Network Source-Available License
+Version 1.0
+
+Copyright (c) 2026 BeSafe Network contributors.
+
+This license grants everyone the right to view, read, audit, and contribute to
+the source code of BeSafe Network (the "Software") for transparency and
+improvement. It does NOT grant the right to copy, redistribute, fork, or
+deploy the Software to operate your own instances, services, or competing
+products.
+
+1. GRANT OF TRANSPARENCY RIGHTS
+
+   You may, free of charge:
+
+   a. View and read the source code of the Software;
+   b. Audit the Software for security, correctness, or compliance purposes;
+   c. Contribute modifications, fixes, or improvements to the Software by
+      submitting them to the official BeSafe Network repository (for example
+      via pull request), subject to the contribution terms in section 3.
+
+2. RESTRICTIONS
+
+   You may NOT, without prior written permission from the copyright holder:
+
+   a. Copy, reproduce, or redistribute the Software, in whole or in part;
+   b. Fork the Software to create a derivative codebase;
+   c. Deploy, host, or operate the Software, or any substantial portion of
+      it, as your own service, instance, or product — including self-hosted,
+      white-label, or "bring your own instance" deployments;
+   d. Use the Software to provide a competing moderation, trust, or safety
+      network service;
+   e. Remove or obscure this license or copyright notices.
+
+   Access credentials, banlist data, reputation data, and operational
+   configuration of the official BeSafe Network service are not part of the
+   Software and are never licensed.
+
+3. CONTRIBUTIONS
+
+   By submitting a contribution to the official repository, you grant the
+   copyright holder a perpetual, irrevocable, worldwide, royalty-free right
+   to use, modify, and distribute your contribution as part of the Software
+   under these same license terms. You represent that you have the right to
+   submit the contribution and that it does not infringe third-party rights.
+
+4. NO WARRANTY
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+
+5. TERMINATION
+
+   Any use of the Software outside the transparency rights in section 1
+   automatically terminates your rights under this license.
+
+For permission requests or questions, contact the BeSafe Network maintainers.
