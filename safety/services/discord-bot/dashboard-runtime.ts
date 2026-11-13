@@ -2707,16 +2707,15 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
     const activeBanCase = await BanCase.findOne({ 'discordAccounts.discordId': member.id, status: 'active' });
     const guildData = await Guild.findOne({ id: member.guild.id });
     const selectionMode = guildData?.settings?.banlistSelectionMode || 'global';
-    
+    const autoBan = guildData?.settings?.autoBanEnabled ?? false;
+    const staffChannelId = guildData?.settings?.staffChannelId || guildData?.settings?.logChannelId;
+    const staffRoleId = guildData?.settings?.staffRoleId;
+
     const isGlobalBanned = (user?.isBanned || !!activeBanCase) && !user?.isTrusted;
     const effectiveBanReason = activeBanCase ? `Ban Case #${activeBanCase.caseNumber}: ${activeBanCase.reason}` : (user?.banReason || 'Global Banlist Violation');
 
     // Existing global ban check
     if (isGlobalBanned && (selectionMode === 'both' || selectionMode === 'global')) {
-      const autoBan = guildData?.settings?.autoBanEnabled ?? false;
-      const staffChannelId = guildData?.settings?.staffChannelId || guildData?.settings?.logChannelId;
-      const staffRoleId = guildData?.settings?.staffRoleId;
-
       if (staffChannelId) {
         const channel = member.guild.channels.cache.get(staffChannelId) as any;
         if (channel) {
@@ -2779,30 +2778,30 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
             }
 
             if (isBlacklisted) {
-              const staffChannelId = guildData.settings.staffChannelId || guildData.settings.logChannelId;
-              const staffRoleId = guildData.settings.staffRoleId;
               if (staffChannelId) {
                 const channel = member.guild.channels.cache.get(staffChannelId) as any;
                 if (channel) {
                   const ping = staffRoleId ? `<@&${staffRoleId}> ` : '';
-                  channel.send(`🚨 **Custom Banlist Hit**: ${member.user.tag} (${member.id}) has joined and matches a record on the custom banlist **"${customBanlist.name}"**.\nReason: ${blacklistReason}\nAutomatically banning...`).catch(() => null);
+                  channel.send(`🚨 **Custom Banlist Hit**: ${member.user.tag} (${member.id}) has joined and matches a record on the custom banlist **"${customBanlist.name}"**.\nReason: ${blacklistReason}\n${autoBan ? 'Automatically banning...' : 'Auto-ban is disabled — manual review required.'}`).catch(() => null);
                 }
               }
 
-              try {
-                const dmPayload = buildTransparentBanDM({
-                  userId: member.id,
-                  reason: blacklistReason,
-                  banlistName: customBanlist.name,
-                  serverName: member.guild.name,
-                  baseUrl: process.env.APP_URL || 'https://besafe.network'
-                });
-                await member.send(dmPayload).catch(() => null);
-                await member.ban({ reason: `Custom Banlist (${customBanlist.name}): ${blacklistReason}` });
-              } catch (e) {
-                console.error('[Custom Banlist] Failed to ban member on custom banlist match:', e);
+              if (autoBan) {
+                try {
+                  const dmPayload = buildTransparentBanDM({
+                    userId: member.id,
+                    reason: blacklistReason,
+                    banlistName: customBanlist.name,
+                    serverName: member.guild.name,
+                    baseUrl: process.env.APP_URL || 'https://besafe.network'
+                  });
+                  await member.send(dmPayload).catch(() => null);
+                  await member.ban({ reason: `Custom Banlist (${customBanlist.name}): ${blacklistReason}` });
+                } catch (e) {
+                  console.error('[Custom Banlist] Failed to ban member on custom banlist match:', e);
+                }
               }
-              return; // Stop further checks if banned
+              return; // Stop further checks on a blacklist hit
             }
           }
         }
@@ -2829,27 +2828,31 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
       }
 
       if (localReason) {
-        try {
-          const dmPayload = buildTransparentBanDM({
-            userId: member.id,
-            reason: localReason,
-            severity: 'permanent',
-            serverName: member.guild.name,
-            baseUrl: process.env.APP_URL || 'https://besafe.network'
-          });
-          await member.send(dmPayload).catch(() => null);
-          await member.ban({ reason: `BeSafe Network Local Auto-Ban: ${localReason}` });
-          const staffChannelId = guildData.settings.staffChannelId || guildData.settings.logChannelId;
-          if (staffChannelId) {
-            const channel = member.guild.channels.cache.get(staffChannelId) as any;
-            if (channel) {
-              channel.send(`🛡️ **Local Auto-Ban**: ${member.user.tag} was automatically banned based on this server's autonomous settings.\nReason: ${localReason}`).catch(() => null);
-            }
+        if (staffChannelId) {
+          const channel = member.guild.channels.cache.get(staffChannelId) as any;
+          if (channel) {
+            channel.send(autoBan
+              ? `🛡️ **Local Auto-Ban**: ${member.user.tag} was automatically banned based on this server's autonomous settings.\nReason: ${localReason}`
+              : `⚠️ **Local Threshold Flag**: ${member.user.tag} (${member.id}) joined and matches this server's autonomous settings.\nReason: ${localReason}\nAuto-ban is disabled — manual review required.`
+            ).catch(() => null);
           }
-        } catch (e) {
-          console.error('Failed to local auto-ban member', e);
         }
-        return;
+        if (autoBan) {
+          try {
+            const dmPayload = buildTransparentBanDM({
+              userId: member.id,
+              reason: localReason,
+              severity: 'permanent',
+              serverName: member.guild.name,
+              baseUrl: process.env.APP_URL || 'https://besafe.network'
+            });
+            await member.send(dmPayload).catch(() => null);
+            await member.ban({ reason: `BeSafe Network Local Auto-Ban: ${localReason}` });
+          } catch (e) {
+            console.error('Failed to local auto-ban member', e);
+          }
+          return;
+        }
       }
     }
 
