@@ -279,7 +279,10 @@ export function createDiscordRuntimeContext(fetchVRChatDisplayName: (vrchatUserI
       if (!loaded) return null;
       const { tf, model } = loaded;
       tensor3d = await models.decodeImageBufferToTensor3D(tf, buffer);
-      if (!tensor3d) return null;
+      if (!tensor3d) {
+        console.info('[NSFW Blocker] Skipping image: undecodable or unsupported format');
+        return null;
+      }
       const predictions = await model.classify(tensor3d);
       const porn = predictions.find((item: any) => item.className === 'Porn')?.probability || 0;
       const hentai = predictions.find((item: any) => item.className === 'Hentai')?.probability || 0;

@@ -1023,6 +1023,32 @@ function pngDimensions(buffer: Buffer): { width: number; height: number } | null
 export async function decodeImageBufferToTensor3D(tf: any, buffer: Buffer): Promise<any | null> {
   if (!buffer || buffer.length < 8) return null;
 
+  // Preferred path: sharp decodes every common format (PNG/JPEG/WebP/GIF/AVIF/BMP)
+  // and downscales to a bounded size, keeping memory usage small.
+  try {
+    const sharpMod: any = await import('sharp');
+    const sharp = sharpMod.default || sharpMod;
+    const MAX_DIM = 1024;
+    const { data, info } = await sharp(buffer, { failOn: 'none', limitInputPixels: 100_000_000 })
+      .rotate()
+      .resize({ width: MAX_DIM, height: MAX_DIM, fit: 'inside', withoutEnlargement: true })
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const width = info.width;
+    const height = info.height;
+    if (width > 0 && height > 0) {
+      const pixelCount = width * height;
+      const rgbValues = new Int32Array(pixelCount * 3);
+      for (let i = 0, j = 0; i < pixelCount * 4; i += 4, j += 3) {
+        rgbValues[j] = data[i];
+        rgbValues[j + 1] = data[i + 1];
+        rgbValues[j + 2] = data[i + 2];
+      }
+      return tf.tensor3d(rgbValues, [height, width, 3], 'int32');
+    }
+  } catch {}
+
   if (typeof tf?.node?.decodeImage === 'function') {
     const rawTensor = tf.node.decodeImage(buffer, 3);
     if (rawTensor?.shape?.length === 4) {
