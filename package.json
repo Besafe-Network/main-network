@@ -12,9 +12,5 @@
     "start": "npm --prefix safety run start",
     "lint": "npm --prefix safety run lint"
   },
-  "dependencies": {
-    "@types/pngjs": "^6.0.5",
-    "jpeg-js": "^0.4.4",
-    "pngjs": "^7.0.0"
-  }
+  "dependencies": {}
 }

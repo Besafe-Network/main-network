@@ -11,8 +11,6 @@ import cryptoNode from 'crypto';
 import axios from 'axios';
 import { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, StreamType, NoSubscriberBehavior, getVoiceConnection, VoiceConnectionStatus, entersState } from '@discordjs/voice';
 import * as EmailTemplates from '../../../emailService';
-import * as tf from '@tensorflow/tfjs';
-import * as nsfwjs from 'nsfwjs';
 import geoip from 'geoip-lite';
 import { sendEnterpriseAgeVerifyCallback } from '../enterprise-utils';
 
@@ -71,8 +69,6 @@ export function registerDirectoryRoutes(app: express.Express, context: any) {
   getGuildDiscordClient,
   leaveVRChatGroupIfOrphaned,
   syncCustomBotForGuild,
-  downloadImageForScan,
-  scanImageBufferWithNsfwjs,
   customBotsMap,
   fetchVRChatDisplayName,
   resolveVRChatUserBySearch,
@@ -86,7 +82,6 @@ export function registerDirectoryRoutes(app: express.Express, context: any) {
   cleanupUserDatabaseForTrustedOnly,
   syncAllBansAcrossPlatforms,
   calculateDynamicTrustIndex,
-  getOrLoadNsfwModel,
   notifyAdmins,
   sendMail,
   serviceName,
@@ -943,8 +938,7 @@ export function registerDirectoryRoutes(app: express.Express, context: any) {
         const features = [
           g.settings?.autoBanEnabled ? 'Global Ban Sync' : null,
           g.settings?.verificationEnabled ? 'Age Verification' : null,
-          vrcGroupId ? '🎮 VRChat Group Linked' : (g.settings?.vrchatBotEnabled ? 'VRChat Sync' : null),
-          g.settings?.nsfwBlockerEnabled ? 'AI NSFW Shield' : null
+          vrcGroupId ? '🎮 VRChat Group Linked' : (g.settings?.vrchatBotEnabled ? 'VRChat Sync' : null)
         ].filter(Boolean);
 
         return {

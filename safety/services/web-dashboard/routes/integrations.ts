@@ -11,8 +11,6 @@ import cryptoNode from 'crypto';
 import axios from 'axios';
 import { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, StreamType, NoSubscriberBehavior, getVoiceConnection, VoiceConnectionStatus, entersState } from '@discordjs/voice';
 import * as EmailTemplates from '../../../emailService';
-import * as tf from '@tensorflow/tfjs';
-import * as nsfwjs from 'nsfwjs';
 import geoip from 'geoip-lite';
 import { sendEnterpriseAgeVerifyCallback } from '../enterprise-utils';
 import { restoreGuildBackup } from '../backup-restore';
@@ -72,8 +70,6 @@ export function registerIntegrationsRoutes(app: express.Express, context: any) {
   unbanUserFromVRChatGroup,
   getGuildDiscordClient,
   leaveVRChatGroupIfOrphaned,
-  downloadImageForScan,
-  scanImageBufferWithNsfwjs,
   fetchVRChatDisplayName,
   resolveVRChatUserBySearch,
   createOrUpdateBanCase,
@@ -86,7 +82,6 @@ export function registerIntegrationsRoutes(app: express.Express, context: any) {
   cleanupUserDatabaseForTrustedOnly,
   syncAllBansAcrossPlatforms,
   calculateDynamicTrustIndex,
-  getOrLoadNsfwModel,
   notifyAdmins,
   sendMail,
   serviceName,
@@ -1044,13 +1039,7 @@ export function registerIntegrationsRoutes(app: express.Express, context: any) {
             vrchatGroupId: '',
             autoUnbanVRChatEnabled: false,
             staffChannelId: '',
-            logChannelId: '',
-            nsfwBlockerEnabled: false,
-            nsfwBlockerAction: 'delete_and_warn',
-            nsfwBlockerLogChannelId: '',
-            nsfwBlockerSensitivity: 0.65,
-            nsfwBlockerScanNsfwChannels: false,
-            nsfwBlockerAllowedChannelIds: []
+            logChannelId: ''
           }
         });
       }
@@ -1403,47 +1392,6 @@ export function registerIntegrationsRoutes(app: express.Express, context: any) {
       res.status(500).json({ error: 'Failed to update settings' });
     }
   });
-
-  // --- NSFW BLOCKER: Image Test Sandbox Endpoint ---
-  app.post('/api/user/guilds/:guildId/nsfw-test', authenticateToken, async (req: any, res) => {
-    try {
-      const { guildId } = req.params;
-      const { imageUrl, threshold } = req.body;
-
-      const adminUser = await Admin.findById(req.user.id);
-      if (!adminUser) return res.status(404).json({ error: 'User not found' });
-
-      const guild = await Guild.findOne({ id: guildId });
-      if (!guild) return res.status(404).json({ error: 'Guild not found' });
-
-      if (adminUser.role !== 'admin' && guild.ownerId !== adminUser.discordId) {
-        return res.status(403).json({ error: 'Permission denied' });
-      }
-
-      if (!imageUrl || typeof imageUrl !== 'string') {
-        return res.status(400).json({ error: 'Please provide a valid image URL to test.' });
-      }
-
-      const testThreshold = typeof threshold === 'number' && threshold > 0 ? threshold : 0.65;
-      const scanResult = await serviceClient.scanDiscordImage(guildId, imageUrl.trim(), testThreshold);
-      if (!scanResult.success && scanResult.reason === 'download') {
-        return res.status(400).json({ error: 'Could not download image. Ensure URL is reachable and points to a valid image format.' });
-      }
-      if (!scanResult.success) {
-        return res.status(500).json({ error: 'Neural network failed to classify this image.' });
-      }
-
-      res.json({
-        success: true,
-        imageUrl,
-        threshold: testThreshold,
-        result: scanResult.result
-      });
-    } catch (err: any) {
-      res.status(500).json({ error: err?.message || 'Error executing NSFW scan test' });
-    }
-  });
-
 
   app.delete('/api/user/guilds/:guildId', authenticateToken, async (req: any, res) => {
     try {

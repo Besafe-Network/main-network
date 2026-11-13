@@ -24,8 +24,6 @@ import {
   entersState
 } from '@discordjs/voice';
 import * as EmailTemplates from './emailService';
-import * as tf from '@tensorflow/tfjs';
-import * as nsfwjs from 'nsfwjs';
 import geoip from 'geoip-lite';
 import { workerSocketHub } from './services/shared/worker-transport';
 import {
@@ -67,7 +65,6 @@ import {
   calculateDynamicTrustIndex,
   isValidDiscordSnowflake,
   isValidVRChatUserId,
-  decodeImageBufferToTensor3D,
 } from './services/shared/models';
 import { restoreGuildBackup } from './services/web-dashboard/backup-restore';
 import { notifyAdmins, sendMail } from './services/shared/email';
@@ -172,122 +169,6 @@ async function startServer() {
     count: 0,
     ageVerifyDisabled: false
   });
-
-  // =========================================================================
-  // --- NSFW BLOCKER ENGINE (@tensorflow/tfjs & nsfwjs) ---
-  // =========================================================================
-  let nsfwModelInstance: any = null;
-  let nsfwModelLoadingPromise: Promise<any> | null = null;
-
-  async function getOrLoadNsfwModel(): Promise<any> {
-    if (nsfwModelInstance) return nsfwModelInstance;
-    if (nsfwModelLoadingPromise) return nsfwModelLoadingPromise;
-
-    nsfwModelLoadingPromise = (async () => {
-      try {
-        console.log('[NSFW Blocker] Initializing NSFWJS model (InceptionV3, high precision) with @tensorflow/tfjs...');
-        nsfwModelInstance = await nsfwjs.load('InceptionV3', { size: 299 });
-        console.log('[NSFW Blocker] NSFWJS InceptionV3 high-precision neural model loaded successfully!');
-        return nsfwModelInstance;
-      } catch (err: any) {
-        console.error('[NSFW Blocker] Failed to load NSFWJS neural model:', err?.message || err);
-        nsfwModelInstance = null;
-        return null;
-      } finally {
-        nsfwModelLoadingPromise = null;
-      }
-    })();
-
-    return nsfwModelLoadingPromise;
-  }
-
-  interface NsfwEvaluation {
-    isNsfw: boolean;
-    topCategory: string;
-    confidence: number;
-    predictions: Array<{ className: string; probability: number }>;
-    flagReason?: string;
-  }
-
-  async function scanImageBufferWithNsfwjs(buffer: Buffer, threshold = 0.65): Promise<NsfwEvaluation | null> {
-    let tensor3d: any = null;
-    try {
-      const model = await getOrLoadNsfwModel();
-      if (!model) return null;
-
-      tensor3d = await decodeImageBufferToTensor3D(tf, buffer);
-      if (!tensor3d) return null;
-
-      const predictions = await model.classify(tensor3d);
-
-      const pornProb = predictions.find((p: any) => p.className === 'Porn')?.probability || 0;
-      const hentaiProb = predictions.find((p: any) => p.className === 'Hentai')?.probability || 0;
-
-      let isNsfw = false;
-      let topCategory = 'Neutral';
-      let confidence = 0;
-      let flagReason = '';
-
-      // The 'Sexy' label is completely ignored per specification; only Porn and Hentai are evaluated as violations.
-      if (pornProb >= threshold) {
-        isNsfw = true;
-        topCategory = 'Pornography';
-        confidence = pornProb;
-        flagReason = `Pornographic visual content detected (${(pornProb * 100).toFixed(1)}% confidence)`;
-      } else if (hentaiProb >= threshold) {
-        isNsfw = true;
-        topCategory = 'Hentai / Illustrated Explicit';
-        confidence = hentaiProb;
-        flagReason = `Explicit illustrated/anime content detected (${(hentaiProb * 100).toFixed(1)}% confidence)`;
-      } else {
-        // Exclude 'Sexy' when determining the primary classification category
-        const relevantPredictions = predictions.filter((p: any) => p.className !== 'Sexy');
-        const top = [...relevantPredictions].sort((a: any, b: any) => b.probability - a.probability)[0];
-        topCategory = top ? top.className : 'Neutral';
-        confidence = top ? top.probability : 0;
-      }
-
-      return {
-        isNsfw,
-        topCategory,
-        confidence,
-        predictions,
-        flagReason
-      };
-    } catch (err: any) {
-      console.warn('[NSFW Blocker] Image decoding or classification skipped:', err?.message || err);
-      return null;
-    } finally {
-      try {
-        if (tensor3d) tensor3d.dispose();
-      } catch {}
-    }
-  }
-
-  async function downloadImageForScan(url: string): Promise<Buffer | null> {
-    try {
-      let targetUrl = url;
-      if (targetUrl.startsWith('/')) {
-        targetUrl = `http://127.0.0.1:${PORT}${targetUrl}`;
-      }
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 8000);
-      const res = await fetch(targetUrl, {
-        signal: controller.signal,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BeSafe-NSFW-Scanner/1.0'
-        }
-      });
-      clearTimeout(timeout);
-      if (!res.ok) return null;
-      const arrayBuffer = await res.arrayBuffer();
-      if (!arrayBuffer || arrayBuffer.byteLength > 15 * 1024 * 1024) return null;
-      return Buffer.from(arrayBuffer);
-    } catch {
-      return null;
-    }
-  }
-
 
   // --- Auth Middleware ---
   const authenticateToken = (req: any, res: any, next: any) => {
@@ -1566,7 +1447,7 @@ async function startServer() {
     VerificationRequest, Log, ReputationRating, Admin, LinkCode, checkAndAutoVerifyFromDiscord,
     createGuildBackup, ServerBackup, restoreGuildBackup, extractVRChatUserId, Report,
     safeSaveReport, notifyAdmins, BanCase, CustomBanlist, getAllVRChatAccounts,
-    downloadImageForScan, scanImageBufferWithNsfwjs, serviceName,
+    serviceName,
     setSyncDiscordCommandsRef: (sync: typeof syncDiscordCommandsRef) => { syncDiscordCommandsRef = sync; },
   });
   client = discordRuntime.client;
@@ -1685,8 +1566,6 @@ async function startServer() {
     getGuildDiscordClient,
     syncCustomBotForGuild,
     customBotsMap,
-    downloadImageForScan,
-    scanImageBufferWithNsfwjs,
     createOrUpdateBanCase,
     liftBanCase,
     recordUnbanAndUnbanUser,
@@ -1697,7 +1576,6 @@ async function startServer() {
     cleanupUserDatabaseForTrustedOnly,
     syncAllBansAcrossPlatforms,
     calculateDynamicTrustIndex,
-    getOrLoadNsfwModel,
     notifyAdmins,
     sendMail,
     serviceName,

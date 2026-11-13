@@ -262,10 +262,6 @@ export class ServiceClient {
     const targetShard = this.discordShardForGuild(guildData.id);
     return workerSocketHub.requestShard('discord-bot', targetShard, 'sync-custom-bot', { guildData });
   }
-
-  async scanDiscordImage(guildId: string, imageUrl: string, threshold: number): Promise<any> {
-    return workerSocketHub.requestShard('discord-bot', this.discordShardForGuild(guildId), 'scan-image', { imageUrl, threshold });
-  }
 }
 
 export const serviceClient = new ServiceClient();

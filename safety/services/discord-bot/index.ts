@@ -36,14 +36,6 @@ async function main() {
       () => discordRuntime.syncGlobalDiscordCommands(),
       {
         'sync-custom-bot': ({ guildData }: { guildData?: any }) => discordRuntime.syncCustomBotForGuild(guildData),
-        'scan-image': async ({ imageUrl, threshold }: { imageUrl?: string; threshold?: number }) => {
-          if (!imageUrl) throw new Error('Image URL is required');
-          const imageBuffer = await runtimeContext.context.downloadImageForScan(imageUrl);
-          if (!imageBuffer) return { success: false, reason: 'download' };
-          const result = await runtimeContext.context.scanImageBufferWithNsfwjs(imageBuffer, threshold);
-          if (!result) return { success: false, reason: 'classification' };
-          return { success: true, result };
-        },
       },
       discordRuntime.getGuildDiscordClient
     ),

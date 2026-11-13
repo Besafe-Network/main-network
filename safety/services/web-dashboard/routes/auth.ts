@@ -11,8 +11,6 @@ import cryptoNode from 'crypto';
 import axios from 'axios';
 import { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, StreamType, NoSubscriberBehavior, getVoiceConnection, VoiceConnectionStatus, entersState } from '@discordjs/voice';
 import * as EmailTemplates from '../../../emailService';
-import * as tf from '@tensorflow/tfjs';
-import * as nsfwjs from 'nsfwjs';
 import geoip from 'geoip-lite';
 import { sendEnterpriseAgeVerifyCallback } from '../enterprise-utils';
 import { invalidateMailConfigCache, sendTestEmail } from '../../shared/email';
@@ -72,8 +70,6 @@ export function registerAuthRoutes(app: express.Express, context: any) {
   getGuildDiscordClient,
   leaveVRChatGroupIfOrphaned,
   syncCustomBotForGuild,
-  downloadImageForScan,
-  scanImageBufferWithNsfwjs,
   customBotsMap,
   fetchVRChatDisplayName,
   resolveVRChatUserBySearch,
@@ -87,7 +83,6 @@ export function registerAuthRoutes(app: express.Express, context: any) {
   cleanupUserDatabaseForTrustedOnly,
   syncAllBansAcrossPlatforms,
   calculateDynamicTrustIndex,
-  getOrLoadNsfwModel,
   notifyAdmins,
   sendMail,
   serviceName,

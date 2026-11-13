@@ -1,6 +1,5 @@
 import { Client } from 'discord.js';
 import * as models from '../shared/models';
-import { config } from '../shared/config';
 import { notifyAdmins } from '../shared/email';
 import { restoreGuildBackup } from '../web-dashboard/backup-restore';
 import { findUserByQuery } from '../web-dashboard/user-lookup';
@@ -223,110 +222,6 @@ export function createDiscordRuntimeContext(fetchVRChatDisplayName: (vrchatUserI
     return { activeCasesCount: activeCases.length, discordBansCount, discordUnbansCount: 0, vrchatBansCount: 0, skippedCount, discordSkippedCount: skippedCount, vrchatSkippedCount: 0 };
   }
 
-  async function downloadImageForScan(url: string): Promise<Buffer | null> {
-    try {
-      const targetUrl = url.startsWith('/') ? `${config.appUrl.replace(/\/$/, '')}${url}` : url;
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 8000);
-      try {
-        const response = await fetch(targetUrl, {
-          signal: controller.signal,
-          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BeSafe-NSFW-Scanner/1.0' },
-        });
-        if (!response.ok) return null;
-        const image = await response.arrayBuffer();
-        if (image.byteLength > 15 * 1024 * 1024) return null;
-        return Buffer.from(image);
-      } finally {
-        clearTimeout(timeout);
-      }
-    } catch {
-      return null;
-    }
-  }
-
-  let nsfwModelPromise: Promise<{ tf: typeof import('@tensorflow/tfjs'); model: any } | null> | null = null;
-
-  function getNsfwModel() {
-    if (!nsfwModelPromise) {
-      nsfwModelPromise = Promise.all([
-        import('@tensorflow/tfjs'),
-        import('nsfwjs'),
-      ])
-        .then(async ([tf, nsfwjs]) => ({ tf, model: await nsfwjs.load('InceptionV3', { size: 299 }) }))
-        .catch((error: any) => {
-          console.error('[NSFW Blocker] Failed to load NSFWJS model; NSFW scanning disabled until next retry:', error?.message || error);
-          nsfwModelPromise = null;
-          return null;
-        });
-    }
-    return nsfwModelPromise;
-  }
-
-  // Serialize NSFW scans so only one image is decoded/classified at a time
-  // per process — parallel scans can multiply peak memory and OOM the worker.
-  let nsfwScanQueue: Promise<unknown> = Promise.resolve();
-  function enqueueNsfwScan<T>(task: () => Promise<T>): Promise<T> {
-    const run = nsfwScanQueue.then(task, task);
-    nsfwScanQueue = run.then(() => undefined, () => undefined);
-    return run;
-  }
-
-  async function scanImageBufferWithNsfwjsInner(buffer: Buffer, threshold = 0.65) {
-    let tensor3d: any = null;
-    try {
-      const loaded = await getNsfwModel();
-      if (!loaded) return null;
-      const { tf, model } = loaded;
-      tensor3d = await models.decodeImageBufferToTensor3D(tf, buffer);
-      if (!tensor3d) {
-        console.info('[NSFW Blocker] Skipping image: undecodable or unsupported format');
-        return null;
-      }
-      const predictions = await model.classify(tensor3d);
-      const porn = predictions.find((item: any) => item.className === 'Porn')?.probability || 0;
-      const hentai = predictions.find((item: any) => item.className === 'Hentai')?.probability || 0;
-      const relevant = predictions.filter((item: any) => item.className !== 'Sexy');
-      const top = [...relevant].sort((left: any, right: any) => right.probability - left.probability)[0];
-      let isNsfw = false;
-      let topCategory = 'Neutral';
-      let confidence = 0;
-      let flagReason = '';
-      if (porn >= threshold) {
-        isNsfw = true;
-        topCategory = 'Pornography';
-        confidence = porn;
-        flagReason = `Pornographic visual content detected (${(porn * 100).toFixed(1)}% confidence)`;
-      } else if (hentai >= threshold) {
-        isNsfw = true;
-        topCategory = 'Hentai / Illustrated Explicit';
-        confidence = hentai;
-        flagReason = `Explicit illustrated/anime content detected (${(hentai * 100).toFixed(1)}% confidence)`;
-      } else {
-        topCategory = top?.className || 'Neutral';
-        confidence = top?.probability || 0;
-      }
-      return {
-        isNsfw,
-        topCategory,
-        confidence,
-        predictions,
-        flagReason,
-      };
-    } catch (error: any) {
-      console.warn('[NSFW Blocker] Image decoding or classification skipped:', error?.message || error);
-      return null;
-    } finally {
-      try {
-        if (tensor3d) tensor3d.dispose();
-      } catch {}
-    }
-  }
-
-  function scanImageBufferWithNsfwjs(buffer: Buffer, threshold = 0.65) {
-    return enqueueNsfwScan(() => scanImageBufferWithNsfwjsInner(buffer, threshold));
-  }
-
   return {
     context: {
       ...models,
@@ -339,8 +234,6 @@ export function createDiscordRuntimeContext(fetchVRChatDisplayName: (vrchatUserI
       checkAndAutoVerifyFromDiscord,
       restoreGuildBackup,
       notifyAdmins,
-      downloadImageForScan,
-      scanImageBufferWithNsfwjs,
       serviceName: 'discord-bot',
       setSyncDiscordCommandsRef: () => {},
     },

@@ -274,13 +274,7 @@ export const guildSchema = new mongoose.Schema({
     customBotEnabled: { type: Boolean, default: false },
     customBotStatus: { type: String, enum: ['online', 'idle', 'dnd', 'invisible'], default: "online" },
     customBotActivityType: { type: String, default: "PLAYING" },
-    customBotActivityText: { type: String, default: "" },
-    nsfwBlockerEnabled: { type: Boolean, default: false },
-    nsfwBlockerAction: { type: String, enum: ['delete_and_warn', 'delete', 'warn', 'log_only'], default: 'delete_and_warn' },
-    nsfwBlockerLogChannelId: { type: String, default: "" },
-    nsfwBlockerSensitivity: { type: Number, default: 0.65 },
-    nsfwBlockerScanNsfwChannels: { type: Boolean, default: false },
-    nsfwBlockerAllowedChannelIds: { type: [String], default: [] }
+    customBotActivityText: { type: String, default: "" }
   },
   publicListing: {
     isListed: { type: Boolean, default: false },
@@ -1010,122 +1004,6 @@ export function buildTransparentBanDM(options: TransparentBanDMOptions) {
   };
 
   return { embeds: [embed] };
-}
-
-const MAX_DECODE_PIXELS = 16_777_216; // 4096x4096 to bound memory usage
-
-function pngDimensions(buffer: Buffer): { width: number; height: number } | null {
-  // IHDR chunk starts at byte 8: length(4) + "IHDR"(4) + width(4) + height(4)
-  if (buffer.length < 24) return null;
-  return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
-}
-
-export async function decodeImageBufferToTensor3D(tf: any, buffer: Buffer): Promise<any | null> {
-  if (!buffer || buffer.length < 8) return null;
-
-  // Preferred path: sharp decodes every common format (PNG/JPEG/WebP/GIF/AVIF/BMP)
-  // and downscales to a bounded size, keeping memory usage small.
-  try {
-    const sharpMod: any = await import('sharp');
-    const sharp = sharpMod.default || sharpMod;
-    const MAX_DIM = 1024;
-    const { data, info } = await sharp(buffer, { failOn: 'none', limitInputPixels: 100_000_000 })
-      .rotate()
-      .resize({ width: MAX_DIM, height: MAX_DIM, fit: 'inside', withoutEnlargement: true })
-      .ensureAlpha()
-      .raw()
-      .toBuffer({ resolveWithObject: true });
-    const width = info.width;
-    const height = info.height;
-    if (width > 0 && height > 0) {
-      const pixelCount = width * height;
-      const rgbValues = new Int32Array(pixelCount * 3);
-      for (let i = 0, j = 0; i < pixelCount * 4; i += 4, j += 3) {
-        rgbValues[j] = data[i];
-        rgbValues[j + 1] = data[i + 1];
-        rgbValues[j + 2] = data[i + 2];
-      }
-      return tf.tensor3d(rgbValues, [height, width, 3], 'int32');
-    }
-  } catch {}
-
-  if (typeof tf?.node?.decodeImage === 'function') {
-    const rawTensor = tf.node.decodeImage(buffer, 3);
-    if (rawTensor?.shape?.length === 4) {
-      const squeezed = rawTensor.slice([0, 0, 0, 0], [1, -1, -1, -1]).squeeze([0]);
-      rawTensor.dispose();
-      return squeezed;
-    }
-    return rawTensor;
-  }
-
-  let width = 0;
-  let height = 0;
-  let rgbaData: Uint8Array | Buffer | null = null;
-
-  // PNG magic bytes: 89 50 4E 47 0D 0A 1A 0A
-  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) {
-    const dims = pngDimensions(buffer);
-    if (dims && dims.width * dims.height > MAX_DECODE_PIXELS) return null;
-    const pngMod: any = await import('pngjs');
-    const PNG = pngMod.PNG || pngMod.default?.PNG || pngMod.default;
-    const decoded = PNG.sync.read(buffer);
-    width = decoded.width;
-    height = decoded.height;
-    rgbaData = decoded.data;
-  }
-  // JPEG magic bytes: FF D8 FF
-  else if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
-    const jpegMod: any = await import('jpeg-js');
-    const jpegDecode = jpegMod.decode || jpegMod.default?.decode;
-    const decoded = jpegDecode(buffer, { useTArray: true, maxMemoryUsageInMB: 512 });
-    width = decoded.width;
-    height = decoded.height;
-    rgbaData = decoded.data;
-  }
-  // BMP magic bytes: 42 4D ("BM")
-  else if (buffer[0] === 0x42 && buffer[1] === 0x4d && buffer.length > 54) {
-    const dataOffset = buffer.readUInt32LE(10);
-    const bmpWidth = buffer.readInt32LE(18);
-    const rawHeight = buffer.readInt32LE(22);
-    const bitsPerPixel = buffer.readUInt16LE(28);
-    const topDown = rawHeight < 0;
-    const bmpHeight = Math.abs(rawHeight);
-    if (bmpWidth * bmpHeight > MAX_DECODE_PIXELS) return null;
-    if (bmpWidth > 0 && bmpHeight > 0 && (bitsPerPixel === 24 || bitsPerPixel === 32)) {
-      const bytesPerPixel = bitsPerPixel / 8;
-      const rowStride = Math.floor((bitsPerPixel * bmpWidth + 31) / 32) * 4;
-      const rgbValues = new Int32Array(bmpWidth * bmpHeight * 3);
-      let dstIdx = 0;
-      for (let y = 0; y < bmpHeight; y++) {
-        const srcRow = topDown ? y : bmpHeight - 1 - y;
-        const rowStart = dataOffset + srcRow * rowStride;
-        for (let x = 0; x < bmpWidth; x++) {
-          const pxOffset = rowStart + x * bytesPerPixel;
-          if (pxOffset + 2 < buffer.length) {
-            rgbValues[dstIdx++] = buffer[pxOffset + 2]; // R
-            rgbValues[dstIdx++] = buffer[pxOffset + 1]; // G
-            rgbValues[dstIdx++] = buffer[pxOffset];     // B
-          }
-        }
-      }
-      return tf.tensor3d(rgbValues, [bmpHeight, bmpWidth, 3], 'int32');
-    }
-  }
-
-  if (!rgbaData || width <= 0 || height <= 0 || width * height > MAX_DECODE_PIXELS) {
-    return null;
-  }
-
-  const pixelCount = width * height;
-  const rgbValues = new Int32Array(pixelCount * 3);
-  for (let i = 0, j = 0; i < pixelCount * 4; i += 4, j += 3) {
-    rgbValues[j] = rgbaData[i];
-    rgbValues[j + 1] = rgbaData[i + 1];
-    rgbValues[j + 2] = rgbaData[i + 2];
-  }
-
-  return tf.tensor3d(rgbValues, [height, width, 3], 'int32');
 }
 
 
