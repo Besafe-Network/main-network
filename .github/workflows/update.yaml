@@ -45,8 +45,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          RUNTIME_IMAGE="${IMAGE_NAME}/runtime-dependencies"
-          BUILD_IMAGE="${IMAGE_NAME}/dashboard-build-dependencies"
+          RUNTIME_IMAGE="${IMAGE_NAME}/besafe_runtime-dependencies"
+          BUILD_IMAGE="${IMAGE_NAME}/besafe_dashboard-build-dependencies"
           DEPENDENCY_HASH=$(sha256sum \
             safety/package.json \
             safety/package-lock.json \
@@ -82,7 +82,7 @@ jobs:
           build_and_push() {
             local service="$1"
             local dockerfile="$2"
-            local image="${IMAGE_NAME}/${service}"
+            local image="${IMAGE_NAME}/besafe_${service}"
             local build_args=(--build-arg "RUNTIME_DEPS_IMAGE=${RUNTIME_IMAGE}:${DEPENDENCY_TAG}")
             local timestamp
             timestamp=$(date +%Y%m%d%H%M%S)
