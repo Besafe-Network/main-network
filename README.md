@@ -2,7 +2,7 @@
 
 BeSafe Network is a global trust and safety network for Discord and VRChat. It provides cross-platform moderation, reputation tracking, age verification, and a shared banlist that server owners can opt into.
 
-The codebase is **open source for transparency**: anyone can read, audit, and contribute. It is **not** open for self-hosting — see [LICENSE](LICENSE) for the exact terms.
+The codebase is **source-available** under the [Elastic License 2.0](LICENSE): anyone can read, audit, fork, and contribute — but it may not be offered to third parties as a hosted or managed service. See [LICENSE](LICENSE) for the exact terms.
 
 ## What it does
 
@@ -46,6 +46,4 @@ npm run start:vrchat   # VRChat worker
 
 ## Contributing
 
-Contributions are welcome — bug reports, documentation fixes, and code improvements via pull request. Because this project is source-available rather than OSI open source, please read the [LICENSE](LICENSE) before submitting: you may contribute code back to this repository, but you may not copy, fork, or deploy the software to run your own instances.
-
-By submitting a contribution you agree that your changes are licensed under the same terms as the project.
+Contributions are welcome — bug reports, documentation fixes, and code improvements via pull request. This project is source-available under the [Elastic License 2.0](LICENSE) rather than OSI open source, so please read the license before submitting. By submitting a contribution you agree that your changes are licensed under the same terms as the project.
