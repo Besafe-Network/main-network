@@ -33,6 +33,12 @@ import {
 import { ShardConfig } from './k8s-sharding';
 import { buildTransparentBanDM, calculateDynamicTrustIndex, isValidDiscordSnowflake } from '../shared/models';
 
+function getAppBaseUrl(): string {
+  const raw = process.env.APP_URL || process.env.HOST || 'https://besafe.network';
+  const withScheme = /^https?:\/\//.test(raw) ? raw : `https://${raw}`;
+  return withScheme.replace(/\/+$/, '');
+}
+
 export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardConfig) {
   const { SystemConfig, Guild, cleanupUserDatabaseForTrustedOnly, syncAllBansAcrossPlatforms, findUserByQuery, serviceClient, resolveDiscordUser, getWatchlistAvatar, User, VerificationRequest, Log, ReputationRating, Admin, LinkCode, checkAndAutoVerifyFromDiscord, createGuildBackup, ServerBackup, restoreGuildBackup, extractVRChatUserId, Report, safeSaveReport, notifyAdmins, BanCase, CustomBanlist, getAllVRChatAccounts, serviceName, setSyncDiscordCommandsRef } = context;
   const clientOptions: any = {
@@ -1616,7 +1622,7 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
         if (!adminAccount) {
           try {
             return await interaction.editReply({ 
-              content: '❌ You need to create an account on our dashboard first and link your Discord account before you can set up a server.\nVisit: ' + process.env.APP_URL + '/dashboard'
+              content: '❌ You need to create an account on our dashboard first and link your Discord account before you can set up a server.\nVisit: ' + getAppBaseUrl() + '/dashboard'
             });
           } catch (e) {
             console.error(e);
@@ -1632,7 +1638,7 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
 
         try {
           await interaction.editReply({ 
-            content: `Server **${guildName}** linked successfully. You can now manage settings at: ${process.env.APP_URL}/dashboard`
+            content: `Server **${guildName}** linked successfully. You can now manage settings at: ${getAppBaseUrl()}/dashboard`
           });
         } catch (e) {
           console.error(e);
@@ -1789,7 +1795,7 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
           }
         }
 
-        const verifyUrl = `${process.env.APP_URL}/verify?user_id=${interaction.user.id}`;
+        const verifyUrl = `${getAppBaseUrl()}/verify?user_id=${interaction.user.id}`;
         
         try {
           await interaction.editReply({ 
@@ -2934,6 +2940,7 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
   targetClient.on(Events.GuildCreate, async (guild) => {
     if (!shouldHandleGuildOnClient(guild?.id, targetClient)) return;
     try {
+      const appUrl = getAppBaseUrl();
       if (guild && guild.name) {
         await Guild.updateOne(
           { id: guild.id },
@@ -2974,7 +2981,7 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
           await targetChannel.send({
             embeds: [{
               title: 'Setup Required',
-              description: `This server has not been configured yet. Please complete the initialization process:\n\n💻 **Account**: Sign up at https://besafesondiscord.com/\n\n🔗 **Link**: Use the /link command to connect your account.\n\n⚙️ **Setup**: Use the /setup command in your server to finish.\n\n⚙️ **Settings**: Go to our web dashboard to controll you settings.`,
+              description: `This server has not been configured yet. Please complete the initialization process:\n\n💻 **Account**: Sign up at ${appUrl}/\n\n🔗 **Link**: Use the /link command to connect your account.\n\n⚙️ **Setup**: Use the /setup command in your server to finish.\n\n⚙️ **Settings**: Go to our web dashboard at ${appUrl}/dashboard to control your settings.`,
               color: 0x3b82f6
             }]
           });
