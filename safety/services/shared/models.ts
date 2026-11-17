@@ -529,6 +529,12 @@ export const trustedCompanySchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
+export const shardGuildCountSchema = new mongoose.Schema({
+  shardId: { type: Number, required: true, unique: true },
+  guildCount: { type: Number, default: 0 },
+  updatedAt: { type: Date, default: Date.now }
+});
+
 // Indexes
 userSchema.index({ isDangerous: 1 });
 userSchema.index({ isAgeVerified: 1 });
@@ -574,6 +580,7 @@ export const VRChatAnnouncementHistory = mongoose.model('VRChatAnnouncementHisto
 export const GeoRule = mongoose.model('GeoRule', geoRuleSchema);
 export const ApiBot = mongoose.model('ApiBot', apiBotSchema);
 export const TrustedCompany = mongoose.model('TrustedCompany', trustedCompanySchema);
+export const ShardGuildCount = mongoose.model('ShardGuildCount', shardGuildCountSchema);
 
 // Safe Save Helpers
 export async function safeSaveReport(report: any) {

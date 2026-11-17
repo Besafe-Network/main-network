@@ -35,7 +35,7 @@ import {
   entersState,
 } from '@discordjs/voice';
 import { ShardConfig } from './k8s-sharding';
-import { buildTransparentBanDM, calculateDynamicTrustIndex, isValidDiscordSnowflake } from '../shared/models';
+import { buildTransparentBanDM, calculateDynamicTrustIndex, isValidDiscordSnowflake, ShardGuildCount } from '../shared/models';
 
 function getAppBaseUrl(): string {
   const raw = process.env.APP_URL || process.env.HOST || 'https://besafe.network';
@@ -1046,6 +1046,7 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
       if (existingClient) {
         console.log(`[Custom Bot Manager] Destroying custom bot for guild ${guildId} on Shard #${shardConfig?.shardId ?? 0} (owned by another shard).`);
         try {
+          const _ti = (existingClient as any)._topggInterval; if (_ti) clearInterval(_ti);
           existingClient.destroy();
         } catch (e) {}
         customBotsMap.delete(guildId);
@@ -1062,6 +1063,7 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
       if (existingClient) {
         console.log(`[Custom Bot Manager] Destroying custom bot for guild ${guildId} (disabled or empty token).`);
         try {
+          const _ti = (existingClient as any)._topggInterval; if (_ti) clearInterval(_ti);
           existingClient.destroy();
         } catch (e) {}
         customBotsMap.delete(guildId);
@@ -1091,7 +1093,10 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
     }
 
     if (existingClient) {
-      try { existingClient.destroy(); } catch (e) {}
+      try {
+        const _ti = (existingClient as any)._topggInterval; if (_ti) clearInterval(_ti);
+        existingClient.destroy();
+      } catch (e) {}
       customBotsMap.delete(guildId);
     }
 
@@ -1145,6 +1150,17 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
       } catch (cmdErr: any) {
         console.error(`[Custom Bot Manager] Failed to register slash commands for guild ${guildId}:`, cmdErr.message);
       }
+
+      // Report this custom bot's server count to top.gg using its own bot token
+      const postCustomTopgg = async () => {
+        await postTopggStats(customClient, token, customClient.guilds.cache.size, 1, `custom bot ${customClient.user?.tag || guildId}`);
+      };
+      void postCustomTopgg();
+      const topggInterval = setInterval(() => {
+        if (customClient.isReady()) void postCustomTopgg();
+      }, 30 * 60 * 1000);
+      (topggInterval as any).unref?.();
+      (customClient as any)._topggInterval = topggInterval;
     });
 
     customClient.on('error', (err) => {
@@ -1255,24 +1271,55 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
     applyMainBotShardPresence(readyShardId);
   });
 
-  const postTopggServerCount = async () => {
+  const postTopggStats = async (targetClient: Client, token: string, serverCount: number, shardCount: number, label = '') => {
     try {
-      if (!client.user?.id || !process.env.DISCORD_TOKEN) return;
-      const shardCount = (client.options as any)?.shardCount || shardConfig?.shardCount || 1;
-      await fetch(`https://top.gg/api/bots/${client.user.id}/stats`, {
+      if (!targetClient.user?.id || !token) return;
+      const res = await fetch(`https://top.gg/api/bots/${targetClient.user.id}/stats`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: process.env.DISCORD_TOKEN,
+          Authorization: token,
         },
         body: JSON.stringify({
-          server_count: client.guilds.cache.size,
+          server_count: serverCount,
           shard_count: shardCount,
         }),
       });
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        console.warn(`[Top.gg] Stats POST failed${label ? ` for ${label}` : ''}: HTTP ${res.status} ${body.slice(0, 200)}`);
+      }
     } catch (err: any) {
-      console.warn('[Top.gg] Failed to post server count:', err?.message || err);
+      console.warn(`[Top.gg] Failed to post server count${label ? ` for ${label}` : ''}:`, err?.message || err, err?.cause?.message ? `(cause: ${err.cause.message})` : '');
     }
+  };
+
+  // Records this shard's guild count in Mongo, then posts the network-wide total
+  // to top.gg (each shard only sees its own guilds, so counts are aggregated).
+  const postMainBotTopggStats = async () => {
+    const shardId = shardConfig?.shardId ?? 0;
+    const shardCount = shardConfig?.shardCount || (client.options as any)?.shardCount || 1;
+    try {
+      await ShardGuildCount.findOneAndUpdate(
+        { shardId },
+        { $set: { guildCount: client.guilds.cache.size, updatedAt: new Date() } },
+        { upsert: true }
+      );
+    } catch (e: any) {
+      console.warn('[Top.gg] Failed to record shard guild count:', e?.message || e);
+    }
+
+    let serverCount = client.guilds.cache.size;
+    if (shardCount > 1) {
+      try {
+        const docs = await ShardGuildCount.find({});
+        serverCount = docs.reduce((sum: number, d: any) => sum + (d.guildCount || 0), 0);
+      } catch (e: any) {
+        console.warn('[Top.gg] Failed to aggregate shard guild counts:', e?.message || e);
+      }
+    }
+
+    await postTopggStats(client, process.env.DISCORD_TOKEN || '', serverCount, shardCount);
   };
 
   client.on(Events.ClientReady, async () => {
@@ -1284,8 +1331,8 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
     presenceUpdateInterval = setInterval(() => applyMainBotShardPresence(), 5 * 60 * 1000);
 
     // Report server count to top.gg on boot and every 30 minutes
-    void postTopggServerCount();
-    setInterval(() => void postTopggServerCount(), 30 * 60 * 1000);
+    void postMainBotTopggStats();
+    setInterval(() => void postMainBotTopggStats(), 30 * 60 * 1000);
 
     setTimeout(() => void scanAndBanCustomBanlistDiscordUsers(), 20000);
     setInterval(() => void scanAndBanCustomBanlistDiscordUsers(), 2 * 60 * 1000);
