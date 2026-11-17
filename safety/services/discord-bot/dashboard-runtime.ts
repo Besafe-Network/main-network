@@ -16,6 +16,10 @@ import {
   TextInputBuilder,
   TextInputStyle,
   ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
   ChannelType,
   EmbedBuilder,
 } from 'discord.js';
@@ -69,15 +73,25 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
     console.error('[Uncaught Exception]', err?.message || err);
   });
 
-  // --- CreatorPlaza Radio Infrastructure ---
-  const CREATORPLAZA_RADIO = {
-    name: 'CreatorPlaza Radio',
-    streamUrl: 'https://stream.creatorplaza.nl/main/',
-    websiteUrl: 'https://creatorplaza.nl/radio',
-    apiUrl: 'https://testing.creatorplaza.nl/api/nowplaying/creatorplaza_radio',
-    color: 0xf97316,
-    iconUrl: 'https://creatorplaza.nl/radio'
-  };
+  // --- Radio Browser Infrastructure (radio-browser.info) ---
+  const RADIO_BROWSER_HOSTS = [
+    'https://de1.api.radio-browser.info',
+    'https://de2.api.radio-browser.info',
+    'https://all.api.radio-browser.info'
+  ];
+
+  interface RadioStationInfo {
+    uuid: string;
+    name: string;
+    streamUrl: string;
+    homepage?: string;
+    favicon?: string;
+    country?: string;
+    codec?: string;
+    bitrate?: number;
+    votes?: number;
+    tags?: string;
+  }
 
   interface RadioSession {
     guildId: string;
@@ -88,6 +102,8 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
     httpStream?: any;
     bufferStream?: PassThrough;
     volume: number; // 1 - 100
+    station?: RadioStationInfo;
+    streamTitle?: string;
     startedAt: Date;
     startedBy: { id: string; username: string };
     reconnectAttempts: number;
@@ -113,64 +129,152 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
     return `shard-${shardId}-guild-${guildId}`;
   }
 
-  async function fetchCreatorPlazaNowPlaying(): Promise<{
-    title: string;
-    artist: string;
-    artUrl?: string;
-    listeners: number;
-    isOnline: boolean;
-    history?: Array<{ title: string; artist: string }>;
-  }> {
-    try {
-      const res = await axios.get(CREATORPLAZA_RADIO.apiUrl, { timeout: 6000 });
-      const data = res.data;
-      const song = data?.now_playing?.song;
-      let title = (song?.title || song?.text || 'CreatorPlaza Radio Live Stream').trim();
-      let artist = (song?.artist || '').trim();
-
-      // If artist is blank or empty, try extracting from "Artist - Title" format
-      if (!artist && title.includes(' - ')) {
-        const parts = title.split(' - ');
-        artist = parts[0].trim();
-        title = parts.slice(1).join(' - ').trim();
-      } else if (!artist) {
-        artist = 'CreatorPlaza Radio';
+  async function radioBrowserGet(path: string): Promise<any> {
+    let lastErr: any = null;
+    for (const host of RADIO_BROWSER_HOSTS) {
+      try {
+        const res = await axios.get(`${host}/json${path}`, {
+          timeout: 8000,
+          headers: { 'User-Agent': 'BeSafeNetwork/1.0 (+https://besafe.network)' }
+        });
+        return res.data;
+      } catch (err) {
+        lastErr = err;
       }
+    }
+    throw lastErr || new Error('Radio Browser API unreachable');
+  }
 
-      const listeners = data?.listeners?.current ?? data?.listeners?.total ?? 0;
-      const isOnline = data?.is_online !== false;
-      const artUrl = song?.art || undefined;
+  function mapRadioStation(raw: any): RadioStationInfo | null {
+    const streamUrl = raw?.url_resolved || raw?.url;
+    if (!raw?.stationuuid || !raw?.name || !streamUrl) return null;
+    const bitrateNum = typeof raw.bitrate === 'number' ? raw.bitrate : parseInt(raw.bitrate, 10);
+    return {
+      uuid: String(raw.stationuuid),
+      name: String(raw.name).slice(0, 200),
+      streamUrl: String(streamUrl),
+      homepage: raw.homepage || undefined,
+      favicon: raw.favicon || undefined,
+      country: raw.country || undefined,
+      codec: raw.codec || undefined,
+      bitrate: Number.isFinite(bitrateNum) ? bitrateNum : undefined,
+      votes: typeof raw.votes === 'number' ? raw.votes : undefined,
+      tags: raw.tags || undefined
+    };
+  }
 
-      const history = Array.isArray(data?.song_history)
-        ? data.song_history.slice(0, 5).map((item: any) => ({
-            title: item?.song?.title || item?.song?.text || 'Unknown Title',
-            artist: item?.song?.artist || 'Unknown Artist',
-          }))
-        : [];
+  async function searchRadioStations(query: string, limit = 5): Promise<RadioStationInfo[]> {
+    const data = await radioBrowserGet(`/stations/search?name=${encodeURIComponent(query)}&limit=${limit}&order=votes&reverse=true&hidebroken=true&is_https=true`);
+    if (!Array.isArray(data)) return [];
+    return data.map(mapRadioStation).filter(Boolean) as RadioStationInfo[];
+  }
 
-      return {
-        title,
-        artist,
-        artUrl,
-        listeners,
-        isOnline,
-        history
-      };
-    } catch (err: any) {
-      console.error('[CreatorPlaza Radio] Failed to fetch now playing data:', err?.message || err);
-      return {
-        title: 'CreatorPlaza Radio Live Stream',
-        artist: 'CreatorPlaza Radio',
-        listeners: 0,
-        isOnline: true
-      };
+  async function getRadioStationByUuid(uuid: string): Promise<RadioStationInfo | null> {
+    try {
+      const data = await radioBrowserGet(`/stations/byuuid/${encodeURIComponent(uuid)}`);
+      const arr = Array.isArray(data) ? data : [data];
+      return arr.length ? mapRadioStation(arr[0]) : null;
+    } catch {
+      return null;
     }
   }
 
-  async function createRadioResource(volumePercent: number = 80, bufferMs: number = 10000): Promise<{ resource: any; httpStream: any; bufferStream: PassThrough }> {
+  async function resolveRadioStation(input: string): Promise<RadioStationInfo | null> {
+    const trimmed = input.trim();
+    if (/^[0-9a-fA-F-]{30,40}$/.test(trimmed)) {
+      const byUuid = await getRadioStationByUuid(trimmed);
+      if (byUuid) return byUuid;
+    }
+    const results = await searchRadioStations(trimmed, 1);
+    return results[0] || null;
+  }
+
+  // Best-effort ICY metadata probe: reads the stream until the first metadata block
+  // and extracts StreamTitle (song name) when the station provides it.
+  async function fetchRadioStreamTitle(streamUrl: string): Promise<string | null> {
+    return new Promise((resolve) => {
+      let settled = false;
+      let req: any = null;
+      const done = (v: string | null) => {
+        if (!settled) { settled = true; clearTimeout(timer); resolve(v); }
+      };
+      const timer = setTimeout(() => {
+        try { req?.destroy?.(); } catch (e) {}
+        done(null);
+      }, 10000);
+
+      axios({
+        method: 'get',
+        url: streamUrl,
+        responseType: 'stream',
+        headers: {
+          'Icy-MetaData': '1',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BeSafeNetwork/1.0',
+          'Accept': '*/*'
+        },
+        decompress: false,
+        timeout: 0
+      }).then((response: any) => {
+        req = response.request;
+        const headers = response.headers || {};
+        const metaint = parseInt(headers['icy-metaint'] || '0', 10) || 0;
+        const stream = response.data;
+        if (metaint <= 0 || !stream) {
+          try { stream?.destroy?.(); } catch (e) {}
+          return done(null);
+        }
+
+        let audioBytes = 0;
+        let metaLen: number | null = null;
+        let metaRemaining = 0;
+        let metaBuf = Buffer.alloc(0);
+        let finished = false;
+
+        const parseMeta = () => {
+          if (finished) return;
+          finished = true;
+          try { stream.destroy(); } catch (e) {}
+          const text = metaBuf.toString('utf8');
+          const m = text.match(/StreamTitle='([^']*)'/i) || text.match(/StreamTitle="([^"]*)"/i);
+          const title = m && m[1] ? m[1].trim() : '';
+          done(title ? title.slice(0, 200) : null);
+        };
+
+        stream.on('data', (chunk: Buffer) => {
+          if (finished) return;
+          if (metaLen === null) {
+            const remaining = metaint - audioBytes;
+            if (chunk.length <= remaining) {
+              audioBytes += chunk.length;
+              return;
+            }
+            audioBytes = metaint;
+            chunk = chunk.slice(remaining);
+            if (chunk.length === 0) return;
+          }
+          if (metaLen === null) {
+            metaLen = chunk[0];
+            metaRemaining = metaLen * 16;
+            chunk = chunk.slice(1);
+            metaBuf = Buffer.alloc(0);
+            if (metaRemaining <= 0) return parseMeta();
+            if (chunk.length === 0) return;
+          }
+          const take = Math.min(chunk.length, metaRemaining);
+          metaBuf = Buffer.concat([metaBuf, chunk.slice(0, take)]);
+          metaRemaining -= take;
+          if (metaRemaining <= 0) parseMeta();
+        });
+        stream.on('error', () => done(null));
+        stream.on('end', () => done(null));
+      }).catch(() => done(null));
+    });
+  }
+
+  async function createRadioResource(streamUrl: string, volumePercent: number = 80, bufferMs: number = 10000): Promise<{ resource: any; httpStream: any; bufferStream: PassThrough }> {
     const response = await axios({
       method: 'get',
-      url: CREATORPLAZA_RADIO.streamUrl,
+      url: streamUrl,
       responseType: 'stream',
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -228,7 +332,12 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
         session.httpStream = undefined;
       }
 
-      const { resource, httpStream, bufferStream } = await createRadioResource(session.volume, bufferMs);
+      const station = session.station;
+      if (!station?.streamUrl) {
+        console.error(`[Radio] No station configured for guild ${session.guildId}`);
+        return;
+      }
+      const { resource, httpStream, bufferStream } = await createRadioResource(station.streamUrl, session.volume, bufferMs);
       session.resource = resource;
       session.httpStream = httpStream;
       session.bufferStream = bufferStream;
@@ -246,14 +355,14 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
           return;
         }
 
-        console.error(`[CreatorPlaza Radio] HTTP stream error in guild ${session.guildId}:`, errMsg);
+        console.error(`[Radio] HTTP stream error in guild ${session.guildId}:`, errMsg);
 
         // Attempt automatic reconnection if session is still active
         const activeSession = radioSessions.get(session.guildId);
         if (activeSession && activeSession.httpStream === httpStream && !activeSession.isStopped) {
           setTimeout(async () => {
             if (radioSessions.get(session.guildId) === activeSession && !activeSession.isStopped) {
-              console.log(`[CreatorPlaza Radio] Auto-reconnecting radio stream for guild ${session.guildId}...`);
+              console.log(`[Radio] Auto-reconnecting radio stream for guild ${session.guildId}...`);
               await startOrResumeRadioPlayer(activeSession);
             }
           }, 2000);
@@ -268,7 +377,7 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
         if (activeSession && activeSession.httpStream === httpStream && !activeSession.isStopped) {
           setTimeout(async () => {
             if (radioSessions.get(session.guildId) === activeSession && !activeSession.isStopped) {
-              console.log(`[CreatorPlaza Radio] Auto-reconnecting stream after end for guild ${session.guildId}...`);
+              console.log(`[Radio] Auto-reconnecting stream after end for guild ${session.guildId}...`);
               await startOrResumeRadioPlayer(activeSession);
             }
           }, 2000);
@@ -279,12 +388,12 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
       session.reconnectAttempts = 0;
     } catch (err: any) {
       if (!session.isStopped) {
-        console.error(`[CreatorPlaza Radio] Failed to create audio resource in guild ${session.guildId}:`, err?.message || err);
+        console.error(`[Radio] Failed to create audio resource in guild ${session.guildId}:`, err?.message || err);
       }
     }
   }
 
-  async function joinAndPlayRadio(guild: any, voiceChannel: any, user: any, initialVolume?: number) {
+  async function joinAndPlayRadio(guild: any, voiceChannel: any, user: any, station: RadioStationInfo, initialVolume?: number) {
     const guildId = guild.id;
     if (!isGuildOwnedByThisShard(guildId)) {
       throw new Error(`Server ${guildId} is assigned to a different Discord shard and cannot be controlled by Shard #${shardConfig?.shardId ?? 0}.`);
@@ -295,9 +404,10 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
 
     let session = radioSessions.get(guildId);
     const volume = typeof initialVolume === 'number' ? Math.max(1, Math.min(100, initialVolume)) : (session?.volume ?? 80);
+    const stationChanged = !!session && session.station?.uuid !== station.uuid;
 
     if (session && session.connection) {
-      if (session.channelId !== voiceChannel.id) {
+      if (session.channelId !== voiceChannel.id || stationChanged) {
         session.isStopped = true;
         if (session.bufferStream) {
           try { session.bufferStream.destroy(); } catch (e) {}
@@ -330,7 +440,7 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
     try {
       await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
     } catch (connErr) {
-      console.error(`[CreatorPlaza Radio] Voice connection failed to reach Ready state in guild ${guildId}:`, connErr);
+      console.error(`[Radio] Voice connection failed to reach Ready state in guild ${guildId}:`, connErr);
       try { connection.destroy(); } catch (e) {}
       throw new Error('Failed to establish voice connection within 20 seconds. Please check Discord bot channel permissions.');
     }
@@ -348,6 +458,8 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
       player,
       resource: null,
       volume,
+      station,
+      streamTitle: undefined,
       startedAt: new Date(),
       startedBy: { id: user.id, username: user.tag || user.username },
       reconnectAttempts: 0,
@@ -373,7 +485,7 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
     player.on('error', (error: any) => {
       const current = radioSessions.get(guildId);
       if (current && !current.isStopped) {
-        console.error(`[CreatorPlaza Radio] Audio player error in guild ${guildId}:`, error?.message || error);
+        console.error(`[Radio] Audio player error in guild ${guildId}:`, error?.message || error);
         current.reconnectAttempts = (current.reconnectAttempts || 0) + 1;
         if (current.reconnectAttempts < 5) {
           setTimeout(async () => {
@@ -465,6 +577,107 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
     return { success: true, volume: clampedVol, inVoice: true };
   }
 
+  function buildRadioPlayingEmbed(session: RadioSession, voiceChannel?: any): EmbedBuilder {
+    const station = session.station;
+    const fields: any[] = [
+      { name: '🔊 Volume', value: `\`${session.volume}%\``, inline: true },
+      { name: '📡 Voice Channel', value: voiceChannel ? `<#${voiceChannel.id}>` : `\`${session.channelId}\``, inline: true }
+    ];
+    if (station?.country) fields.push({ name: '🌍 Country', value: station.country, inline: true });
+    if (station?.codec) fields.push({ name: '🎵 Codec', value: `${station.codec}${station.bitrate ? ` • ${station.bitrate}kbps` : ''}`, inline: true });
+
+    const embed = new EmbedBuilder()
+      .setTitle(`📻 Now Playing: ${station?.name || 'Internet Radio'}`)
+      .setColor(0x8b5cf6)
+      .addFields(fields)
+      .setFooter({ text: 'Radio Browser • internet radio' })
+      .setTimestamp();
+
+    if (station?.homepage) embed.setURL(station.homepage);
+    if (station?.favicon) {
+      try { embed.setThumbnail(station.favicon); } catch (e) {}
+    }
+    if (session.streamTitle) {
+      embed.setDescription(`🎶 **Track:** ${session.streamTitle}`);
+    }
+    return embed;
+  }
+
+  async function attemptRadioPlay(interaction: any, station: RadioStationInfo, volume?: number): Promise<{ ok: boolean; error?: string; session?: RadioSession; voiceChannel?: any }> {
+    if (!interaction.guild) {
+      return { ok: false, error: '❌ Radio can only be used inside a Discord server.' };
+    }
+    const member = interaction.member as any;
+    const voiceChannel = member?.voice?.channel;
+    if (!voiceChannel) {
+      return { ok: false, error: '❌ **You must be in a voice channel** to play radio! Join a voice channel and try again.' };
+    }
+    const permissions = voiceChannel.permissionsFor(interaction.client.user?.id || interaction.guild.members.me?.id);
+    if (permissions && (!permissions.has(PermissionFlagsBits.Connect) || !permissions.has(PermissionFlagsBits.Speak))) {
+      return { ok: false, error: '❌ **Missing Permissions:** The bot needs **Connect** and **Speak** permissions in your voice channel.' };
+    }
+    try {
+      const session = await joinAndPlayRadio(interaction.guild, voiceChannel, interaction.user, station, volume);
+      return { ok: true, session, voiceChannel };
+    } catch (err: any) {
+      return { ok: false, error: `❌ Failed to connect or start radio: ${err?.message || 'Unknown error'}` };
+    }
+  }
+
+  async function refreshSessionStreamTitle(session: RadioSession) {
+    if (!session.station?.streamUrl) return;
+    try {
+      const title = await fetchRadioStreamTitle(session.station.streamUrl);
+      if (title) session.streamTitle = title;
+    } catch (e) {}
+  }
+
+  async function getFavoriteStations(discordUserId: string): Promise<any[]> {
+    try {
+      const user = await User.findOne({ id: discordUserId });
+      return Array.isArray(user?.favoriteRadios) ? user.favoriteRadios : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  async function addFavoriteStation(discordUserId: string, username: string, station: RadioStationInfo): Promise<{ added: boolean; total: number }> {
+    let user = await User.findOne({ id: discordUserId });
+    if (!user) {
+      user = new User({ id: discordUserId, username: username || '', favoriteRadios: [] });
+    }
+    const favs = Array.isArray(user.favoriteRadios) ? user.favoriteRadios : [];
+    const existed = favs.some((f: any) => f.stationUuid === station.uuid);
+    const next = favs.filter((f: any) => f.stationUuid !== station.uuid);
+    next.unshift({
+      stationUuid: station.uuid,
+      name: station.name,
+      streamUrl: station.streamUrl,
+      homepage: station.homepage || '',
+      favicon: station.favicon || '',
+      country: station.country || '',
+      codec: station.codec || '',
+      bitrate: station.bitrate ?? null,
+      addedAt: new Date()
+    });
+    user.favoriteRadios = next.slice(0, 20);
+    if (username) user.username = username;
+    user.updatedAt = new Date();
+    await user.save();
+    return { added: !existed, total: user.favoriteRadios.length };
+  }
+
+  async function removeFavoriteStation(discordUserId: string, stationUuid: string): Promise<boolean> {
+    const user = await User.findOne({ id: discordUserId });
+    if (!user) return false;
+    const before = (user.favoriteRadios || []).length;
+    user.favoriteRadios = (user.favoriteRadios || []).filter((f: any) => f.stationUuid !== stationUuid);
+    if (user.favoriteRadios.length === before) return false;
+    user.updatedAt = new Date();
+    await user.save();
+    return true;
+  }
+
   const rawDiscordCommands = [
     new SlashCommandBuilder()
       .setName('help')
@@ -476,10 +689,24 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
 
     new SlashCommandBuilder()
       .setName('radio')
-      .setDescription('Play and control CreatorPlaza Radio in your voice channel')
+      .setDescription('Search, play, and manage internet radio stations')
+      .addSubcommand(sub =>
+        sub.setName('search')
+          .setDescription('Search radio-browser.info for stations')
+          .addStringOption(opt =>
+            opt.setName('query')
+              .setDescription('Station name, genre, or keyword')
+              .setRequired(true)
+          )
+      )
       .addSubcommand(sub =>
         sub.setName('play')
-          .setDescription('Play CreatorPlaza Radio in your current voice channel')
+          .setDescription('Play a radio station by name or station UUID')
+          .addStringOption(opt =>
+            opt.setName('station')
+              .setDescription('Station name or UUID')
+              .setRequired(true)
+          )
           .addIntegerOption(opt =>
             opt.setName('volume')
               .setDescription('Initial volume level (1-100)')
@@ -489,16 +716,34 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
           )
       )
       .addSubcommand(sub =>
+        sub.setName('favorite')
+          .setDescription('Save a station to your personal favorites')
+          .addStringOption(opt =>
+            opt.setName('station')
+              .setDescription('Station name or UUID')
+              .setRequired(true)
+          )
+      )
+      .addSubcommand(sub =>
+        sub.setName('unfavorite')
+          .setDescription('Remove a station from your personal favorites')
+          .addStringOption(opt =>
+            opt.setName('station')
+              .setDescription('Station name or UUID')
+              .setRequired(true)
+          )
+      )
+      .addSubcommand(sub =>
         sub.setName('stop')
-          .setDescription('Stop playing CreatorPlaza Radio and disconnect from voice')
+          .setDescription('Stop the radio and leave the voice channel')
       )
       .addSubcommand(sub =>
         sub.setName('np')
-          .setDescription('Show currently playing song and artist on CreatorPlaza Radio')
+          .setDescription('Show the current station and track info')
       )
       .addSubcommand(sub =>
         sub.setName('volume')
-          .setDescription('Adjust CreatorPlaza Radio playback volume (1-100)')
+          .setDescription('Adjust radio playback volume (1-100)')
           .addIntegerOption(opt =>
             opt.setName('level')
               .setDescription('Volume level (1-100)')
@@ -509,16 +754,22 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
       ),
 
     new SlashCommandBuilder()
+      .setName('favorites')
+      .setDescription('View and play your saved radio stations')
+      .setIntegrationTypes([0, 1])
+      .setContexts([0, 1, 2]),
+
+    new SlashCommandBuilder()
       .setName('np')
-      .setDescription('Show current song name and artist on CreatorPlaza Radio'),
+      .setDescription('Show the current radio station and track info'),
 
     new SlashCommandBuilder()
       .setName('stop')
-      .setDescription('Stop CreatorPlaza Radio and leave the voice channel'),
+      .setDescription('Stop the radio and leave the voice channel'),
 
     new SlashCommandBuilder()
       .setName('volume')
-      .setDescription('Change CreatorPlaza Radio volume')
+      .setDescription('Change radio playback volume')
       .addIntegerOption(opt =>
         opt.setName('level')
           .setDescription('Volume level from 1 to 100')
@@ -1358,7 +1609,7 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
 
       if (commandName === 'help') {
         return interaction.reply({
-          content: 'Use `/info` for BeSafe Network information. Commands include `/check`, `/report`, `/setup`, `/verify`, `/link`, `/vote`, `/age-verify`, `/backup`, `/radio`, `/reputation`, and moderation tools.',
+          content: 'Use `/info` for BeSafe Network information. Commands include `/check`, `/report`, `/setup`, `/verify`, `/link`, `/vote`, `/age-verify`, `/backup`, `/radio`, `/favorites`, `/reputation`, and moderation tools.',
           ephemeral: true,
         });
       }
@@ -2030,8 +2281,8 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
               inline: false
             },
             {
-              name: '📻 CreatorPlaza Radio (24/7 Stream)',
-              value: '• `/radio [play|stop|np|volume]` — Stream CreatorPlaza Radio in your voice channel.\n• `/np` — Fetch current song name & artist.\n• `/volume <1-100>` — Adjust playback volume.\n• `/stop` — Stop radio and leave voice channel.',
+              name: '📻 Internet Radio (radio-browser.info)',
+              value: '• `/radio search <query>` — Find stations and play them with buttons.\n• `/radio play <station>` — Play a station by name or UUID.\n• `/radio favorite <station>` — Save a station to your favorites.\n• `/favorites` — Play your saved stations.\n• `/np` — Show current station & track info.\n• `/volume <1-100>` — Adjust playback volume.\n• `/stop` — Stop radio and leave voice channel.',
               inline: false
             },
             {
@@ -2053,12 +2304,12 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
             },
             {
               name: '📜 Command Reference',
-              value: `• \`/check <user>\` — View global standing & ban history\n• \`/report [user]\` — Submit evidence on web portal\n• \`/reputation <user> <+1/-1>\` — Rate user reputation\n• \`/warn <user> <reason>\` — Issue moderation warning\n• \`/radio play\` — Play CreatorPlaza Radio in VC\n• \`/np\` — Now playing track & artist\n• \`/volume <1-100>\` — Set radio volume\n• \`/stop\` — Stop radio & disconnect\n• \`/verify\` — Server member verification\n${isAgeVerifyOff ? '• `[DISABLED]` `/age-verify` — (Unsynced / Disabled by Admin)\n' : '• `/age-verify` — Launch manual age verification\n'}• \`/agerole\` — Sync verified age role\n• \`/age-delete\` — Self-service deletion of your own age verification data & records\n• \`/backup <create|list|restore>\` — Server anti-raid backup system\n• \`/setup\` — Link server to web dashboard\n• \`/vote\` — Vote for BeSafe on top.gg`,
+              value: `• \`/check <user>\` — View global standing & ban history\n• \`/report [user]\` — Submit evidence on web portal\n• \`/reputation <user> <+1/-1>\` — Rate user reputation\n• \`/warn <user> <reason>\` — Issue moderation warning\n• \`/radio play <station>\` — Play a radio station in VC\n• \`/radio search <query>\` — Search & play stations\n• \`/favorites\` — Play your saved stations\n• \`/np\` — Now playing station & track\n• \`/volume <1-100>\` — Set radio volume\n• \`/stop\` — Stop radio & disconnect\n• \`/verify\` — Server member verification\n${isAgeVerifyOff ? '• `[DISABLED]` `/age-verify` — (Unsynced / Disabled by Admin)\n' : '• `/age-verify` — Launch manual age verification\n'}• \`/agerole\` — Sync verified age role\n• \`/age-delete\` — Self-service deletion of your own age verification data & records\n• \`/backup <create|list|restore>\` — Server anti-raid backup system\n• \`/setup\` — Link server to web dashboard\n• \`/vote\` — Vote for BeSafe on top.gg`,
               inline: false
             },
             {
               name: '🔗 Web Dashboard & Portal',
-              value: `[**Open Dashboard**](${baseUrl}) • [**CreatorPlaza Radio**](https://creatorplaza.nl/radio) • [**Submit Report**](${baseUrl}/report)`,
+              value: `[**Open Dashboard**](${baseUrl}) • [**Radio Browser**](https://www.radio-browser.info) • [**Submit Report**](${baseUrl}/report)`,
               inline: false
             }
           ],
@@ -2091,73 +2342,101 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
 
         const sub = options.getSubcommand(false) || 'play';
 
-        if (sub === 'play') {
+        if (sub === 'search') {
+          const query = (options.getString('query') || '').trim();
+          if (!query) {
+            return interaction.reply({ content: '❌ Please provide a search query.', ephemeral: true }).catch(() => null);
+          }
           try {
-            if (!interaction.deferred && !interaction.replied) {
-              await interaction.deferReply();
-            }
+            await interaction.deferReply({ ephemeral: true });
           } catch (e) {}
 
-          const member = interaction.member as any;
-          const voiceChannel = member?.voice?.channel;
-
-          if (!voiceChannel) {
-            return await interaction.editReply({
-              content: '❌ **You must be in a voice channel** to play CreatorPlaza Radio! Join a voice channel and try again.'
-            });
-          }
-
-          const permissions = voiceChannel.permissionsFor(interaction.client.user?.id || interaction.guild.members.me?.id);
-          if (permissions && (!permissions.has(PermissionFlagsBits.Connect) || !permissions.has(PermissionFlagsBits.Speak))) {
-            return await interaction.editReply({
-              content: '❌ **Missing Permissions:** The bot needs permissions to **Connect** and **Speak** in your voice channel.'
-            });
-          }
-
-          const initialVol = options.getInteger('volume') ?? undefined;
-
-          await interaction.editReply({
-            content: '⏳ **Connecting to CreatorPlaza Radio & pre-buffering 10 seconds of audio...**\n*Building 10-second anti-stutter buffer cushion to eliminate audio cutouts...*'
-          }).catch(() => null);
-
           try {
-            const session = await joinAndPlayRadio(interaction.guild, voiceChannel, interaction.user, initialVol);
-            const np = await fetchCreatorPlazaNowPlaying();
+            const stations = await searchRadioStations(query, 5);
+            if (!stations.length) {
+              return await interaction.editReply({ content: `🔍 No radio stations found for **${query}**. Try a different keyword.` });
+            }
 
-            const playEmbed = {
-              title: '📻 CreatorPlaza Radio | Now Streaming',
-              description: `🎶 **Now Playing:** **${np.title}**\n🎤 **Artist:** **${np.artist}**\n\n🔊 **Volume:** \`${session.volume}%\`\n📡 **Voice Channel:** <#${voiceChannel.id}>\n👥 **Listeners:** \`${np.listeners}\`\n⚡ **Audio Buffer:** \`10s Anti-Stutter Cushion Active\``,
-              color: 0xf97316,
-              thumbnail: np.artUrl ? { url: np.artUrl } : { url: 'https://creatorplaza.nl/radio' },
-              fields: [
-                {
-                  name: '🌐 Radio Website',
-                  value: '[**creatorplaza.nl/radio**](https://creatorplaza.nl/radio)',
-                  inline: true
-                },
-                {
-                  name: '🔗 Stream URL',
-                  value: '[**stream.creatorplaza.nl/main**](https://stream.creatorplaza.nl/main)',
-                  inline: true
-                },
-                {
-                  name: '🎛️ Radio Commands',
-                  value: '• `/np` — Show current song & artist\n• `/volume <1-100>` — Adjust playback volume\n• `/stop` — Stop radio & leave voice channel',
-                  inline: false
-                }
-              ],
-              footer: {
-                text: 'CreatorPlaza Radio • 24/7 Shoutcast Stream',
-                icon_url: 'https://cdn-icons-png.flaticon.com/512/3845/3845868.png'
-              },
-              timestamp: new Date().toISOString()
-            };
+            const embed = new EmbedBuilder()
+              .setTitle('📻 Radio Search Results')
+              .setDescription(stations.map((s, i) => `**${i + 1}.** ${s.name}${s.country ? ` • ${s.country}` : ''}${s.codec ? ` • ${s.codec}${s.bitrate ? ` ${s.bitrate}kbps` : ''}` : ''}`).join('\n'))
+              .setColor(0x8b5cf6)
+              .setFooter({ text: 'Press ▶ to play in your voice channel or ⭐ to save to favorites' });
 
-            return await interaction.editReply({ embeds: [playEmbed] });
-          } catch (err: any) {
-            console.error('[CreatorPlaza Radio] Failed to start radio:', err);
-            return await interaction.editReply({ content: `❌ Failed to connect or start CreatorPlaza Radio: ${err?.message || 'Unknown error'}` });
+            const rows = stations.map((s) => new ActionRowBuilder<ButtonBuilder>().addComponents(
+              new ButtonBuilder().setCustomId(`rb:play:${s.uuid}`).setLabel(`▶ ${s.name}`.slice(0, 75)).setStyle(ButtonStyle.Success),
+              new ButtonBuilder().setCustomId(`rb:fav:${s.uuid}`).setLabel('⭐ Favorite').setStyle(ButtonStyle.Secondary)
+            ));
+
+            return await interaction.editReply({ embeds: [embed], components: rows.slice(0, 5) });
+          } catch (e: any) {
+            console.error('[Radio] Search failed:', e?.message || e);
+            return await interaction.editReply({ content: '❌ Radio search failed — the radio-browser.info API is unreachable right now.' });
           }
+        }
+
+        if (sub === 'play') {
+          const stationInput = (options.getString('station') || '').trim();
+          if (!stationInput) {
+            return interaction.reply({ content: '❌ Please provide a station name or UUID. Use `/radio search` to browse.', ephemeral: true }).catch(() => null);
+          }
+          const volume = options.getInteger('volume') ?? undefined;
+          try {
+            await interaction.deferReply();
+          } catch (e) {}
+
+          let station: RadioStationInfo | null = null;
+          try {
+            station = await resolveRadioStation(stationInput);
+          } catch (e: any) {
+            return await interaction.editReply({ content: `❌ Radio lookup failed: ${e?.message || 'API unreachable'}` });
+          }
+          if (!station) {
+            return await interaction.editReply({ content: `❌ No radio station found matching **${stationInput}**. Try \`/radio search\` to browse.` });
+          }
+
+          const res = await attemptRadioPlay(interaction, station, volume);
+          if (!res.ok || !res.session) {
+            return await interaction.editReply({ content: res.error || '❌ Failed to start radio.' });
+          }
+          await refreshSessionStreamTitle(res.session);
+          return await interaction.editReply({ embeds: [buildRadioPlayingEmbed(res.session, res.voiceChannel)] });
+        }
+
+        if (sub === 'favorite' || sub === 'unfavorite') {
+          const stationInput = (options.getString('station') || '').trim();
+          if (!stationInput) {
+            return interaction.reply({ content: '❌ Please provide a station name or UUID.', ephemeral: true }).catch(() => null);
+          }
+          try {
+            await interaction.deferReply({ ephemeral: true });
+          } catch (e) {}
+
+          let station: RadioStationInfo | null = null;
+          try {
+            station = await resolveRadioStation(stationInput);
+          } catch (e: any) {
+            return await interaction.editReply({ content: `❌ Radio lookup failed: ${e?.message || 'API unreachable'}` });
+          }
+          if (!station) {
+            return await interaction.editReply({ content: `❌ No radio station found matching **${stationInput}**.` });
+          }
+
+          if (sub === 'favorite') {
+            const r = await addFavoriteStation(interaction.user.id, interaction.user.username, station);
+            return await interaction.editReply({
+              content: r.added
+                ? `⭐ Added **${station.name}** to your favorites (${r.total}/20). Use \`/favorites\` to play it.`
+                : `ℹ️ **${station.name}** is already in your favorites.`
+            });
+          }
+
+          const removed = await removeFavoriteStation(interaction.user.id, station.uuid);
+          return await interaction.editReply({
+            content: removed
+              ? `🗑️ Removed **${station.name}** from your favorites.`
+              : `ℹ️ **${station.name}** is not in your favorites.`
+          });
         }
 
         if (sub === 'stop') {
@@ -2169,19 +2448,14 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
 
           const stopped = stopRadioInGuild(interaction.guild.id);
           if (stopped) {
-            const stopEmbed = {
-              title: '⏹️ CreatorPlaza Radio Stopped',
-              description: 'Successfully stopped the stream and left the voice channel.\n\nUse `/radio play` anytime to start listening again!',
-              color: 0xef4444,
-              footer: {
-                text: 'CreatorPlaza Radio • creatorplaza.nl/radio',
-                icon_url: 'https://cdn-icons-png.flaticon.com/512/3845/3845868.png'
-              }
-            };
+            const stopEmbed = new EmbedBuilder()
+              .setTitle('⏹️ Radio Stopped')
+              .setDescription('Successfully stopped the stream and left the voice channel.\n\nUse `/radio play <station>` or `/radio search` anytime to start listening again!')
+              .setColor(0xef4444)
+              .setFooter({ text: 'Radio Browser • internet radio' });
             return await interaction.editReply({ embeds: [stopEmbed] });
-          } else {
-            return await interaction.editReply({ content: 'ℹ️ CreatorPlaza Radio is not currently playing in this server.' });
           }
+          return await interaction.editReply({ content: 'ℹ️ The radio is not currently playing in this server.' });
         }
 
         if (sub === 'np') {
@@ -2191,52 +2465,12 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
             }
           } catch (e) {}
 
-          const np = await fetchCreatorPlazaNowPlaying();
           const session = radioSessions.get(interaction.guild.id);
-
-          const npEmbed: any = {
-            title: '📻 CreatorPlaza Radio | Now Playing',
-            description: `🎶 **Track:** **${np.title}**\n🎤 **Artist:** **${np.artist}**`,
-            color: 0xf97316,
-            thumbnail: np.artUrl ? { url: np.artUrl } : undefined,
-            fields: [
-              {
-                name: '👥 Live Listeners',
-                value: `\`${np.listeners}\``,
-                inline: true
-              },
-              {
-                name: '🔊 Voice Volume',
-                value: session ? `\`${session.volume}%\`` : '`Not playing in VC`',
-                inline: true
-              },
-              {
-                name: '🌐 Radio Page',
-                value: '[**creatorplaza.nl/radio**](https://creatorplaza.nl/radio)',
-                inline: true
-              },
-              {
-                name: '📡 Stream URL',
-                value: '[**stream.creatorplaza.nl/main**](https://stream.creatorplaza.nl/main)',
-                inline: false
-              }
-            ],
-            footer: {
-              text: 'CreatorPlaza Radio • Live Shoutcast Stream',
-              icon_url: 'https://cdn-icons-png.flaticon.com/512/3845/3845868.png'
-            },
-            timestamp: new Date().toISOString()
-          };
-
-          if (np.history && np.history.length > 0) {
-            npEmbed.fields.push({
-              name: '🕒 Recently Played',
-              value: np.history.map((h: any, idx: number) => `\`${idx + 1}.\` **${h.title}** - *${h.artist}*`).join('\n'),
-              inline: false
-            });
+          if (!session || !session.station) {
+            return await interaction.editReply({ content: '📻 Nothing is playing right now. Use `/radio search` or `/radio play <station>` to start.' });
           }
-
-          return await interaction.editReply({ embeds: [npEmbed] });
+          await refreshSessionStreamTitle(session);
+          return await interaction.editReply({ embeds: [buildRadioPlayingEmbed(session)] });
         }
 
         if (sub === 'volume') {
@@ -2245,13 +2479,60 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
 
           if (res.inVoice) {
             return await interaction.reply({
-              content: `🔊 **CreatorPlaza Radio** volume adjusted to **${res.volume}%**`
-            }).catch(() => null);
-          } else {
-            return await interaction.reply({
-              content: `🔊 Set default **CreatorPlaza Radio** volume to **${res.volume}%** (Use \`/radio play\` to connect and stream).`
+              content: `🔊 Radio volume adjusted to **${res.volume}%**`
             }).catch(() => null);
           }
+          return await interaction.reply({
+            content: `🔊 Set default radio volume to **${res.volume}%** (Use \`/radio play\` to connect and stream).`
+          }).catch(() => null);
+        }
+      }
+
+      if (commandName === 'favorites') {
+        try {
+          const favs = await getFavoriteStations(interaction.user.id);
+          if (!favs.length) {
+            return interaction.reply({
+              content: '⭐ You have no favorite stations yet.\n• Use `/radio search <query>` and press the ⭐ button, or\n• `/radio favorite <station>` to save one.\nThen come back here to play them!',
+              ephemeral: true
+            }).catch(() => null);
+          }
+
+          const stations = favs
+            .filter((f: any) => f.stationUuid && f.streamUrl)
+            .map((f: any): RadioStationInfo => ({
+              uuid: f.stationUuid,
+              name: f.name || 'Unknown Station',
+              streamUrl: f.streamUrl,
+              homepage: f.homepage || undefined,
+              favicon: f.favicon || undefined,
+              country: f.country || undefined,
+              codec: f.codec || undefined,
+              bitrate: f.bitrate ?? undefined
+            }));
+
+          if (!stations.length) {
+            return interaction.reply({ content: '⭐ Your favorites list is empty or corrupted. Try re-adding stations with `/radio favorite`.', ephemeral: true }).catch(() => null);
+          }
+
+          const embed = new EmbedBuilder()
+            .setTitle(`⭐ ${interaction.user.username}'s Favorite Stations`)
+            .setDescription(stations.map((s, i) => `**${i + 1}.** ${s.name}${s.country ? ` • ${s.country}` : ''}`).join('\n'))
+            .setColor(0x8b5cf6)
+            .setFooter({ text: 'Pick a station below to play it in your voice channel' });
+
+          const select = new StringSelectMenuBuilder()
+            .setCustomId('rb:favplay')
+            .setPlaceholder('Choose a station to play')
+            .addOptions(stations.slice(0, 25).map((s) => new StringSelectMenuOptionBuilder()
+              .setLabel(s.name.slice(0, 100))
+              .setValue(s.uuid.slice(0, 100))
+              .setDescription(`${s.country || 'Internet radio'}${s.codec ? ` • ${s.codec}` : ''}`.slice(0, 100))));
+
+          return interaction.reply({ embeds: [embed], components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select)], ephemeral: true }).catch(() => null);
+        } catch (e: any) {
+          console.error('[Radio] Failed to load favorites:', e?.message || e);
+          return interaction.reply({ content: '❌ Failed to load your favorites.', ephemeral: true }).catch(() => null);
         }
       }
 
@@ -2262,52 +2543,13 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
           }
         } catch (e) {}
 
-        const np = await fetchCreatorPlazaNowPlaying();
-        const session = interaction.guildId ? radioSessions.get(interaction.guildId) : null;
-
-        const npEmbed: any = {
-          title: '📻 CreatorPlaza Radio | Now Playing',
-          description: `🎶 **Track:** **${np.title}**\n🎤 **Artist:** **${np.artist}**`,
-          color: 0xf97316,
-          thumbnail: np.artUrl ? { url: np.artUrl } : undefined,
-          fields: [
-            {
-              name: '👥 Live Listeners',
-              value: `\`${np.listeners}\``,
-              inline: true
-            },
-            {
-              name: '🔊 Voice Volume',
-              value: session ? `\`${session.volume}%\`` : '`Not playing in VC`',
-              inline: true
-            },
-            {
-              name: '🌐 Radio Page',
-              value: '[**creatorplaza.nl/radio**](https://creatorplaza.nl/radio)',
-              inline: true
-            },
-            {
-              name: '📡 Stream URL',
-              value: '[**stream.creatorplaza.nl/main**](https://stream.creatorplaza.nl/main)',
-              inline: false
-            }
-          ],
-          footer: {
-            text: 'CreatorPlaza Radio • Live Shoutcast Stream',
-            icon_url: 'https://cdn-icons-png.flaticon.com/512/3845/3845868.png'
-          },
-          timestamp: new Date().toISOString()
-        };
-
-        if (np.history && np.history.length > 0) {
-          npEmbed.fields.push({
-            name: '🕒 Recently Played',
-            value: np.history.map((h: any, idx: number) => `\`${idx + 1}.\` **${h.title}** - *${h.artist}*`).join('\n'),
-            inline: false
-          });
+        const guildId = interaction.guildId || interaction.guild?.id;
+        const session = guildId ? radioSessions.get(guildId) : null;
+        if (!session || !session.station) {
+          return await interaction.editReply({ content: '📻 Nothing is playing right now. Use `/radio search` or `/radio play <station>` to start.' });
         }
-
-        return await interaction.editReply({ embeds: [npEmbed] });
+        await refreshSessionStreamTitle(session);
+        return await interaction.editReply({ embeds: [buildRadioPlayingEmbed(session)] });
       }
 
       if (commandName === 'stop') {
@@ -2323,19 +2565,14 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
 
         const stopped = stopRadioInGuild(interaction.guild.id);
         if (stopped) {
-          const stopEmbed = {
-            title: '⏹️ CreatorPlaza Radio Stopped',
-            description: 'Successfully stopped the stream and left the voice channel.\n\nUse `/radio play` anytime to start listening again!',
-            color: 0xef4444,
-            footer: {
-              text: 'CreatorPlaza Radio • creatorplaza.nl/radio',
-              icon_url: 'https://cdn-icons-png.flaticon.com/512/3845/3845868.png'
-            }
-          };
+          const stopEmbed = new EmbedBuilder()
+            .setTitle('⏹️ Radio Stopped')
+            .setDescription('Successfully stopped the stream and left the voice channel.\n\nUse `/radio play <station>` anytime to start listening again!')
+            .setColor(0xef4444)
+            .setFooter({ text: 'Radio Browser • internet radio' });
           return await interaction.editReply({ embeds: [stopEmbed] });
-        } else {
-          return await interaction.editReply({ content: 'ℹ️ CreatorPlaza Radio is not currently playing in this server.' });
         }
+        return await interaction.editReply({ content: 'ℹ️ The radio is not currently playing in this server.' });
       }
 
       if (commandName === 'volume') {
@@ -2348,13 +2585,91 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
 
         if (res.inVoice) {
           return await interaction.reply({
-            content: `🔊 **CreatorPlaza Radio** volume adjusted to **${res.volume}%**`
-          }).catch(() => null);
-        } else {
-          return await interaction.reply({
-            content: `🔊 Set default **CreatorPlaza Radio** volume to **${res.volume}%** (Use \`/radio play\` to connect and stream).`
+            content: `🔊 Radio volume adjusted to **${res.volume}%**`
           }).catch(() => null);
         }
+        return await interaction.reply({
+          content: `🔊 Set default radio volume to **${res.volume}%** (Use \`/radio play\` to connect and stream).`
+        }).catch(() => null);
+      }
+    }
+
+    // Handle Radio Buttons (search results: play / favorite)
+    if (interaction.isButton()) {
+      const customId = interaction.customId || '';
+      if (customId.startsWith('rb:')) {
+        const parts = customId.split(':');
+        const action = parts[1];
+        const stationUuid = parts.slice(2).join(':');
+        try {
+          await interaction.deferReply({ ephemeral: true });
+        } catch (e) {}
+
+        if (action === 'fav') {
+          const station = await getRadioStationByUuid(stationUuid);
+          if (!station) {
+            return interaction.editReply({ content: '❌ Could not load that station right now.' }).catch(() => null);
+          }
+          try {
+            const r = await addFavoriteStation(interaction.user.id, interaction.user.username, station);
+            return interaction.editReply({
+              content: r.added
+                ? `⭐ Added **${station.name}** to your favorites (${r.total}/20). Use \`/favorites\` to play it.`
+                : `ℹ️ **${station.name}** is already in your favorites.`
+            }).catch(() => null);
+          } catch (e: any) {
+            return interaction.editReply({ content: '❌ Failed to save favorite.' }).catch(() => null);
+          }
+        }
+
+        if (action === 'play') {
+          const station = await getRadioStationByUuid(stationUuid);
+          if (!station) {
+            return interaction.editReply({ content: '❌ Could not load that station right now.' }).catch(() => null);
+          }
+          const res = await attemptRadioPlay(interaction, station);
+          if (!res.ok || !res.session) {
+            return interaction.editReply({ content: res.error || '❌ Failed to start radio.' }).catch(() => null);
+          }
+          await refreshSessionStreamTitle(res.session);
+          return interaction.editReply({ embeds: [buildRadioPlayingEmbed(res.session, res.voiceChannel)] }).catch(() => null);
+        }
+      }
+    }
+
+    // Handle Radio Favorites Select Menu
+    if (interaction.isStringSelectMenu()) {
+      const customId = interaction.customId || '';
+      if (customId === 'rb:favplay') {
+        const stationUuid = interaction.values?.[0];
+        try {
+          await interaction.deferReply({ ephemeral: true });
+        } catch (e) {}
+
+        const favs = await getFavoriteStations(interaction.user.id);
+        const fav = favs.find((f: any) => f.stationUuid === stationUuid);
+        const station: RadioStationInfo | null = fav
+          ? {
+              uuid: fav.stationUuid,
+              name: fav.name || 'Unknown Station',
+              streamUrl: fav.streamUrl,
+              homepage: fav.homepage || undefined,
+              favicon: fav.favicon || undefined,
+              country: fav.country || undefined,
+              codec: fav.codec || undefined,
+              bitrate: fav.bitrate ?? undefined
+            }
+          : await getRadioStationByUuid(stationUuid || '');
+
+        if (!station?.streamUrl) {
+          return interaction.editReply({ content: '❌ Could not load that station right now.' }).catch(() => null);
+        }
+        const res = await attemptRadioPlay(interaction, station);
+        if (!res.ok || !res.session) {
+          return interaction.editReply({ content: res.error || '❌ Failed to start radio.' }).catch(() => null);
+        }
+        await refreshSessionStreamTitle(res.session);
+        return interaction.editReply({ embeds: [buildRadioPlayingEmbed(res.session, res.voiceChannel)] }).catch(() => null);
       }
     }
 

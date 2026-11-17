@@ -49,6 +49,17 @@ export const userSchema = new mongoose.Schema({
     unbanReason: String
   }],
   vrchatLastCheckedAt: { type: Date, default: Date.now },
+  favoriteRadios: [{
+    stationUuid: { type: String, required: true },
+    name: String,
+    streamUrl: String,
+    homepage: String,
+    favicon: String,
+    country: String,
+    codec: String,
+    bitrate: Number,
+    addedAt: { type: Date, default: Date.now }
+  }],
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
