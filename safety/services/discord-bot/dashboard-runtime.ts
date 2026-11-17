@@ -717,11 +717,11 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
       )
       .addSubcommand(sub =>
         sub.setName('favorite')
-          .setDescription('Save a station to your personal favorites')
+          .setDescription('Save a station (or the currently playing one) to your personal favorites')
           .addStringOption(opt =>
             opt.setName('station')
-              .setDescription('Station name or UUID')
-              .setRequired(true)
+              .setDescription('Station name or UUID (defaults to the currently playing station)')
+              .setRequired(false)
           )
       )
       .addSubcommand(sub =>
@@ -2452,21 +2452,39 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
 
         if (sub === 'favorite' || sub === 'unfavorite') {
           const stationInput = (options.getString('station') || '').trim();
-          if (!stationInput) {
-            return interaction.reply({ content: '❌ Please provide a station name or UUID.', ephemeral: true }).catch(() => null);
-          }
-          try {
-            await interaction.deferReply({ ephemeral: true });
-          } catch (e) {}
 
           let station: RadioStationInfo | null = null;
-          try {
-            station = await resolveRadioStation(stationInput);
-          } catch (e: any) {
-            return await interaction.editReply({ content: `❌ Radio lookup failed: ${e?.message || 'API unreachable'}` });
-          }
-          if (!station) {
-            return await interaction.editReply({ content: `❌ No radio station found matching **${stationInput}**.` });
+
+          if (!stationInput && sub === 'favorite') {
+            // No station given — save whatever is currently playing in this server
+            const session = radioSessions.get(interaction.guild.id);
+            if (session?.station) {
+              station = session.station;
+              try {
+                await interaction.deferReply({ ephemeral: true });
+              } catch (e) {}
+            } else {
+              return interaction.reply({
+                content: '📻 Nothing is playing right now. Use `/radio play <station>` first, or pass a station name/UUID: `/radio favorite <station>`.',
+                ephemeral: true
+              }).catch(() => null);
+            }
+          } else {
+            if (!stationInput) {
+              return interaction.reply({ content: '❌ Please provide a station name or UUID.', ephemeral: true }).catch(() => null);
+            }
+            try {
+              await interaction.deferReply({ ephemeral: true });
+            } catch (e) {}
+
+            try {
+              station = await resolveRadioStation(stationInput);
+            } catch (e: any) {
+              return await interaction.editReply({ content: `❌ Radio lookup failed: ${e?.message || 'API unreachable'}` });
+            }
+            if (!station) {
+              return await interaction.editReply({ content: `❌ No radio station found matching **${stationInput}**.` });
+            }
           }
 
           if (sub === 'favorite') {
