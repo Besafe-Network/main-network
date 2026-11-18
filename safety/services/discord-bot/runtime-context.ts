@@ -4,7 +4,10 @@ import { notifyAdmins } from '../shared/email';
 import { restoreGuildBackup } from '../web-dashboard/backup-restore';
 import { findUserByQuery } from '../web-dashboard/user-lookup';
 
-export function createDiscordRuntimeContext(fetchVRChatDisplayName: (vrchatUserId: string) => Promise<string | null>) {
+export function createDiscordRuntimeContext(
+  fetchVRChatDisplayName: (vrchatUserId: string) => Promise<string | null>,
+  requestDashboardCommandFn?: (command: string, payload: any) => Promise<any>
+) {
   const clientRef: { current?: Client } = {};
   const guildClientResolverRef: { current?: (guildId: string) => any } = {};
 
@@ -228,7 +231,10 @@ export function createDiscordRuntimeContext(fetchVRChatDisplayName: (vrchatUserI
       cleanupUserDatabaseForTrustedOnly,
       syncAllBansAcrossPlatforms,
       findUserByQuery,
-      serviceClient: { fetchVRChatDisplayName },
+      serviceClient: {
+        fetchVRChatDisplayName,
+        requestDashboardCommand: requestDashboardCommandFn || (async () => { throw new Error('Dashboard command socket is not connected'); }),
+      },
       resolveDiscordUser: models.resolveDiscordUser,
       getWatchlistAvatar: models.getWatchlistAvatar,
       checkAndAutoVerifyFromDiscord,

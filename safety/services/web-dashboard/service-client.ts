@@ -66,6 +66,15 @@ export class ServiceClient {
     return workerSocketHub.request('vrchat-bot', 'group-details', { groupId });
   }
 
+  async listVRChatGroupInstances(groupId: string): Promise<any[]> {
+    const result = await workerSocketHub.request('vrchat-bot', 'group-instances', { groupId });
+    return Array.isArray(result) ? result : [];
+  }
+
+  async closeVRChatGroupInstance(groupId: string, location: string, hardClose = true): Promise<any> {
+    return workerSocketHub.request('vrchat-bot', 'close-instance', { groupId, location, hardClose });
+  }
+
   async assignVRChatGroup(groupId: string): Promise<any> {
     return workerSocketHub.request('vrchat-bot', 'join-group', { groupId });
   }

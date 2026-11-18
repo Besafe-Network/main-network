@@ -20,10 +20,16 @@ async function main() {
   await connectDB();
 
   let workerSocket: ReturnType<typeof connectWorkerToDashboard> | undefined;
-  const runtimeContext = createDiscordRuntimeContext(async (vrchatUserId) => {
-    if (!workerSocket) throw new Error('Dashboard command socket is not connected');
-    return requestDashboardCommand(workerSocket, 'vrchat-display-name', { vrchatUserId });
-  });
+  const runtimeContext = createDiscordRuntimeContext(
+    async (vrchatUserId) => {
+      if (!workerSocket) throw new Error('Dashboard command socket is not connected');
+      return requestDashboardCommand(workerSocket, 'vrchat-display-name', { vrchatUserId });
+    },
+    async (command: string, payload: any) => {
+      if (!workerSocket) throw new Error('Dashboard command socket is not connected');
+      return requestDashboardCommand(workerSocket, command, payload);
+    }
+  );
   const discordRuntime = createDashboardDiscordRuntime(runtimeContext.context, shardConfig);
   const client = discordRuntime.client;
   runtimeContext.setClient(client);

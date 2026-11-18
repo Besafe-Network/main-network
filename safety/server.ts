@@ -1591,6 +1591,14 @@ async function startServer() {
       if (!payload?.vrchatUserId) throw new Error('VRChat user ID is required');
       return serviceClient.fetchVRChatDisplayName(payload.vrchatUserId);
     }
+    if (command === 'vrchat-group-instances') {
+      if (!payload?.groupId) throw new Error('groupId is required');
+      return serviceClient.listVRChatGroupInstances(payload.groupId);
+    }
+    if (command === 'vrchat-close-instance') {
+      if (!payload?.groupId || !payload?.location) throw new Error('groupId and location are required');
+      return serviceClient.closeVRChatGroupInstance(payload.groupId, payload.location, payload.hardClose !== false);
+    }
     if (command === 'send-group-log') {
       if (!payload?.message) throw new Error('Log message is required');
       const sentViaWorker = await serviceClient.sendGuildLogMessage({

@@ -81,6 +81,38 @@ export function createVRChatWorkerCommands() {
       if (!response.ok) throw new Error(`VRChat group lookup failed: HTTP ${response.status}`);
       return { ...(await response.json() as Record<string, any>), botAssigned: bot.vrchatUsername };
     },
+    'group-instances': async ({ groupId }: { groupId?: string }) => {
+      if (!groupId) throw new Error('groupId is required');
+      const config = await SystemConfig.findOne({ id: 'main' });
+      if (!config) throw new Error('Config not found');
+      const bot = await getBotForGroup(config, groupId);
+      const { headers, apiKey } = await getVRChatAuthHeadersForBot(bot, config);
+      const response = await fetch(`https://api.vrchat.cloud/api/1/groups/${groupId}/instances?apiKey=${apiKey}`, { headers });
+      if (!response.ok) {
+        const errText = await response.text().catch(() => '');
+        throw new Error(`VRChat instances lookup failed: HTTP ${response.status} ${errText.slice(0, 150)}`);
+      }
+      const data = await response.json();
+      return Array.isArray(data) ? data : [];
+    },
+    'close-instance': async ({ groupId, location, hardClose }: { groupId?: string; location?: string; hardClose?: boolean }) => {
+      if (!groupId) throw new Error('groupId is required');
+      if (!location) throw new Error('location is required');
+      const config = await SystemConfig.findOne({ id: 'main' });
+      if (!config) throw new Error('Config not found');
+      const bot = await getBotForGroup(config, groupId);
+      const { headers, apiKey } = await getVRChatAuthHeadersForBot(bot, config);
+      const qs = hardClose === false ? '' : '?hardClose=true';
+      const response = await fetch(`https://api.vrchat.cloud/api/1/instances/${location}${qs}`, {
+        method: 'DELETE',
+        headers,
+      });
+      if (!response.ok) {
+        const errText = await response.text().catch(() => '');
+        throw new Error(`VRChat close instance failed: HTTP ${response.status} ${errText.slice(0, 200)}`);
+      }
+      return { success: true, status: response.status };
+    },
     'join-group': async ({ groupId }: { groupId?: string }) => {
       if (!groupId) throw new Error('groupId is required');
       const config = await SystemConfig.findOne({ id: 'main' });

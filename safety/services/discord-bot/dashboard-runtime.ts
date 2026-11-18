@@ -678,6 +678,42 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
     return true;
   }
 
+  // --- VRChat Group Instance Management ---
+  const pendingInstanceCloses = new Map<string, { discordGuildId: string; location: string; label: string; createdAt: number }>();
+  let instanceCloseTokenSeq = 0;
+
+  async function getLinkedVRChatGroupId(discordGuildId: string): Promise<{ groupId: string | null; error?: string }> {
+    const guildData = await Guild.findOne({ id: discordGuildId });
+    if (!guildData) return { groupId: null, error: 'Guild not found.' };
+    const groupId = (guildData.settings?.vrchatGroupId || '').trim();
+    if (!guildData.settings?.vrchatBotEnabled || !groupId) {
+      return { groupId: null, error: 'This server does not have a VRChat group linked. Enable VRChat integration and set a group ID in the dashboard first.' };
+    }
+    return { groupId };
+  }
+
+  function formatVRChatInstance(inst: any) {
+    const location = inst?.location || '';
+    const instanceId = inst?.instanceId || location.split(':')[1] || '';
+    const typeMatch = String(instanceId).match(/~(group|hidden|friends|public)\(/);
+    const memberCount = typeof inst?.memberCount === 'number' ? inst.memberCount : (inst?.world?.occupants ?? '?');
+    return {
+      location,
+      instanceId,
+      worldName: inst?.world?.name || 'Unknown World',
+      memberCount,
+      capacity: inst?.world?.capacity,
+      instType: typeMatch ? typeMatch[1] : 'unknown',
+    };
+  }
+
+  function prunePendingInstanceCloses() {
+    const cutoff = Date.now() - 15 * 60 * 1000;
+    for (const [k, v] of pendingInstanceCloses) {
+      if (v.createdAt < cutoff) pendingInstanceCloses.delete(k);
+    }
+  }
+
   const rawDiscordCommands = [
     new SlashCommandBuilder()
       .setName('help')
@@ -776,6 +812,24 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
           .setMinValue(1)
           .setMaxValue(100)
           .setRequired(true)
+      ),
+
+    new SlashCommandBuilder()
+      .setName('instances')
+      .setDescription('List active instances of this server\'s linked VRChat group'),
+
+    new SlashCommandBuilder()
+      .setName('close-instance')
+      .setDescription('Close a VRChat group instance remotely (emergency raid shutdown)')
+      .addStringOption(opt =>
+        opt.setName('instance')
+          .setDescription('Instance ID, location, or world name (see /instances)')
+          .setRequired(true)
+      )
+      .addBooleanOption(opt =>
+        opt.setName('hard')
+          .setDescription('Hard close — immediately disconnect all users (default: true)')
+          .setRequired(false)
       ),
 
     new SlashCommandBuilder()
@@ -2657,6 +2711,126 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
           content: `🔊 Set default radio volume to **${res.volume}%** (Use \`/radio play\` to connect and stream).`
         }).catch(() => null);
       }
+
+      if (commandName === 'instances') {
+        if (!interaction.guild) {
+          return interaction.reply({ content: '❌ This command must be used in a Discord server.', ephemeral: true }).catch(() => null);
+        }
+        const member = interaction.member as any;
+        if (!member?.permissions?.has(PermissionFlagsBits.ManageGuild)) {
+          return interaction.reply({ content: '❌ You need the **Manage Server** permission to view group instances.', ephemeral: true }).catch(() => null);
+        }
+        try {
+          await interaction.deferReply({ ephemeral: true });
+        } catch (e) {}
+
+        const { groupId, error } = await getLinkedVRChatGroupId(interaction.guild.id);
+        if (!groupId) {
+          return interaction.editReply({ content: `❌ ${error}` }).catch(() => null);
+        }
+
+        try {
+          const rawInstances = await serviceClient.requestDashboardCommand('vrchat-group-instances', { groupId });
+          const list = Array.isArray(rawInstances) ? rawInstances : [];
+          if (!list.length) {
+            return interaction.editReply({ content: '✅ No active VRChat group instances right now.' }).catch(() => null);
+          }
+
+          const formatted = list.map(formatVRChatInstance).filter((f) => f.location);
+          const lines = formatted.slice(0, 15).map((f, i) =>
+            `**${i + 1}.** ${f.worldName} — ${f.memberCount}${f.capacity ? `/${f.capacity}` : ''} users • \`${f.instType}\``
+          );
+          const embed = new EmbedBuilder()
+            .setTitle('🎮 Active VRChat Group Instances')
+            .setDescription(lines.join('\n') + (formatted.length > 15 ? `\n*...and ${formatted.length - 15} more*` : ''))
+            .setColor(0x8b5cf6)
+            .setFooter({ text: `Group: ${groupId} • Press a button below or use /close-instance to shut one down` });
+
+          prunePendingInstanceCloses();
+          const components: ActionRowBuilder<ButtonBuilder>[] = [];
+          formatted.slice(0, 5).forEach((f) => {
+            const token = `${++instanceCloseTokenSeq}`;
+            pendingInstanceCloses.set(token, {
+              discordGuildId: interaction.guild.id,
+              location: f.location,
+              label: `${f.worldName} (${f.memberCount} users)`,
+              createdAt: Date.now()
+            });
+            components.push(new ActionRowBuilder<ButtonBuilder>().addComponents(
+              new ButtonBuilder().setCustomId(`vci:ask:${token}`).setLabel(`⛔ Close: ${f.worldName}`.slice(0, 80)).setStyle(ButtonStyle.Danger)
+            ));
+          });
+
+          return interaction.editReply({ embeds: [embed], components }).catch(() => null);
+        } catch (e: any) {
+          console.error('[Instances] Failed to list VRChat instances:', e?.message || e);
+          return interaction.editReply({ content: `❌ Failed to fetch VRChat instances: ${e?.message || 'Unknown error'}` }).catch(() => null);
+        }
+      }
+
+      if (commandName === 'close-instance') {
+        if (!interaction.guild) {
+          return interaction.reply({ content: '❌ This command must be used in a Discord server.', ephemeral: true }).catch(() => null);
+        }
+        const member = interaction.member as any;
+        if (!member?.permissions?.has(PermissionFlagsBits.ManageGuild)) {
+          return interaction.reply({ content: '❌ You need the **Manage Server** permission to close instances.', ephemeral: true }).catch(() => null);
+        }
+        const query = (options.getString('instance') || '').trim();
+        if (!query) {
+          return interaction.reply({ content: '❌ Please provide an instance ID, location, or world name. Use `/instances` to list active ones.', ephemeral: true }).catch(() => null);
+        }
+        try {
+          await interaction.deferReply({ ephemeral: true });
+        } catch (e) {}
+
+        const { groupId, error } = await getLinkedVRChatGroupId(interaction.guild.id);
+        if (!groupId) {
+          return interaction.editReply({ content: `❌ ${error}` }).catch(() => null);
+        }
+
+        let rawInstances: any[] = [];
+        try {
+          const res = await serviceClient.requestDashboardCommand('vrchat-group-instances', { groupId });
+          rawInstances = Array.isArray(res) ? res : [];
+        } catch (e: any) {
+          return interaction.editReply({ content: `❌ Failed to fetch VRChat instances: ${e?.message || 'Unknown error'}` }).catch(() => null);
+        }
+
+        const q = query.toLowerCase();
+        const matches = rawInstances.filter((inst: any) => {
+          const loc = String(inst?.location || '');
+          const iid = String(inst?.instanceId || '');
+          const wname = String(inst?.world?.name || '').toLowerCase();
+          return loc.toLowerCase().includes(q) || iid.toLowerCase().includes(q) || wname.includes(q);
+        });
+
+        if (!matches.length) {
+          return interaction.editReply({ content: `❌ No active instance matching **${query}**. Use \`/instances\` to see what's running.` }).catch(() => null);
+        }
+        if (matches.length > 1) {
+          const listLines = matches.slice(0, 10).map((inst: any, i: number) => {
+            const f = formatVRChatInstance(inst);
+            return `**${i + 1}.** ${f.worldName} — ${f.memberCount} users • \`${f.instanceId.slice(0, 60)}\``;
+          });
+          return interaction.editReply({
+            content: `⚠️ **${matches.length} instances match "${query}".** Be more specific (use the instance ID):\n${listLines.join('\n')}`
+          }).catch(() => null);
+        }
+
+        const target = formatVRChatInstance(matches[0]);
+        const hard = options.getBoolean('hard') !== false;
+        try {
+          await serviceClient.requestDashboardCommand('vrchat-close-instance', { groupId, location: target.location, hardClose: hard });
+          const embed = new EmbedBuilder()
+            .setTitle('✅ VRChat Instance Closed')
+            .setDescription(`**${target.worldName}** has been ${hard ? '**hard closed** — all users disconnected' : 'closed — no new users can join'}.\n\n\`${target.location}\``)
+            .setColor(0x10b981);
+          return interaction.editReply({ embeds: [embed] }).catch(() => null);
+        } catch (e: any) {
+          return interaction.editReply({ content: `❌ Failed to close instance: ${e?.message || 'Unknown error'}\n*(The VRChat bot account needs the group's instance-manage permission.)*` }).catch(() => null);
+        }
+      }
     }
 
     // Handle Radio Buttons (search results: play / favorite)
@@ -2698,6 +2872,57 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
           }
           await refreshSessionStreamTitle(res.session);
           return interaction.editReply({ embeds: [buildRadioPlayingEmbed(res.session, res.voiceChannel)] }).catch(() => null);
+        }
+      }
+
+      if (customId.startsWith('vci:')) {
+        const parts = customId.split(':');
+        const action = parts[1];
+        const token = parts[2];
+        const pending = pendingInstanceCloses.get(token);
+
+        if (!pending) {
+          return interaction.reply({ content: '❌ This close request has expired. Run `/instances` again to get a fresh list.', ephemeral: true }).catch(() => null);
+        }
+
+        const member = interaction.member as any;
+        if (!member?.permissions?.has(PermissionFlagsBits.ManageGuild)) {
+          return interaction.reply({ content: '❌ You need the **Manage Server** permission to close instances.', ephemeral: true }).catch(() => null);
+        }
+
+        if (action === 'ask') {
+          try { await interaction.deferReply({ ephemeral: true }); } catch (e) {}
+          const embed = new EmbedBuilder()
+            .setTitle('⚠️ Close VRChat Instance?')
+            .setDescription(`This will **disconnect all users** currently inside **${pending.label}**.\n\nInstance: \`${pending.location}\``)
+            .setColor(0xef4444);
+          const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder().setCustomId(`vci:go:${token}`).setLabel('Confirm Close').setStyle(ButtonStyle.Danger),
+            new ButtonBuilder().setCustomId(`vci:no:${token}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary)
+          );
+          return interaction.editReply({ embeds: [embed], components: [row] }).catch(() => null);
+        }
+
+        if (action === 'no') {
+          try { await interaction.deferReply({ ephemeral: true }); } catch (e) {}
+          pendingInstanceCloses.delete(token);
+          return interaction.editReply({ content: 'Cancelled — the instance was not closed.' }).catch(() => null);
+        }
+
+        if (action === 'go') {
+          try { await interaction.deferReply({ ephemeral: true }); } catch (e) {}
+          const { groupId, error } = await getLinkedVRChatGroupId(pending.discordGuildId);
+          if (!groupId) {
+            pendingInstanceCloses.delete(token);
+            return interaction.editReply({ content: `❌ ${error}` }).catch(() => null);
+          }
+          try {
+            await serviceClient.requestDashboardCommand('vrchat-close-instance', { groupId, location: pending.location, hardClose: true });
+            pendingInstanceCloses.delete(token);
+            return interaction.editReply({ content: `✅ Instance **${pending.label}** has been hard closed — all users disconnected.` }).catch(() => null);
+          } catch (e: any) {
+            return interaction.editReply({ content: `❌ Failed to close instance: ${e?.message || 'Unknown error'}` }).catch(() => null);
+          }
         }
       }
     }
