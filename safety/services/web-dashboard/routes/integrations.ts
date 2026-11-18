@@ -1995,7 +1995,7 @@ export function registerIntegrationsRoutes(app: express.Express, context: any) {
         avatarUrl: admin.avatarUrl || '',
         bio: admin.bio || '',
         discordId: admin.discordId || null,
-        vrchatUserId: admin.vrchatUserId || '',
+        vrchatUserId: admin.vrchatUserId || discordUserData?.vrchatUserId || '',
         vrchatUsername: admin.vrchatUsername || '',
         dawnchatId: admin.dawnchatId || '',
         dawnchatUsername: admin.dawnchatUsername || '',
@@ -2171,9 +2171,15 @@ export function registerIntegrationsRoutes(app: express.Express, context: any) {
   app.post('/api/user/unlink-vrchat', authenticateToken, async (req: any, res) => {
     try {
       const adminUser = await Admin.findById(req.user.id).select('discordId').catch(() => null);
-      await Admin.findByIdAndUpdate(req.user.id, { $unset: { vrchatUserId: 1, vrchatUsername: 1 } });
+      await Admin.findByIdAndUpdate(req.user.id, { $unset: { vrchatUserId: 1, vrchatUsername: 1, vrchatAgeVerified: 1 } });
       const cancelOr: any[] = [{ adminId: String(req.user.id) }];
       if (adminUser?.discordId) cancelOr.push({ discordUserId: String(adminUser.discordId) });
+      if (adminUser?.discordId) {
+        await User.findOneAndUpdate(
+          { id: adminUser.discordId },
+          { $unset: { vrchatUserId: 1, vrchatUsername: 1, vrchatAgeVerified: 1 }, $set: { updatedAt: new Date() } }
+        ).catch(() => null);
+      }
       await VRChatLinkRequest.updateMany(
         { status: 'pending', $or: cancelOr },
         { $set: { status: 'cancelled', updatedAt: new Date() } }

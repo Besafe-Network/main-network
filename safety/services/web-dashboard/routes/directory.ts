@@ -1654,7 +1654,7 @@ export function registerDirectoryRoutes(app: express.Express, context: any) {
       await User.findOneAndUpdate(
         { id: userId },
         { 
-          $set: { isAgeVerified: false }, 
+          $set: { isAgeVerified: false, vrchatAgeVerified: false }, 
           $unset: { dob: 1, ageVerifiedAt: 1 } 
         }
       );

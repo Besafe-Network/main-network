@@ -1727,7 +1727,15 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
       await User.findOneAndUpdate(
         { id: userId },
         { 
-          $set: { isAgeVerified: false }, 
+          $set: { isAgeVerified: false, vrchatAgeVerified: false }," type="string"<|sep|>          $unset: { dob: 1, ageVerifiedAt: 1 } 
+        }
+      );
+
+      // Keep the linked dashboard Admin record in sync
+      await Admin.updateMany(
+        { discordId: userId },
+        { $set: { isAgeVerified: false, vrchatAgeVerified: false }, $unset: { dob: 1, ageVerifiedAt: 1 } }
+      ).catch(() => null); 
           $unset: { dob: 1, ageVerifiedAt: 1 } 
         }
       );
@@ -2208,13 +2216,17 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
         if (sub === 'unlink') {
           await User.findOneAndUpdate(
             { id: interaction.user.id },
-            { $unset: { vrchatUserId: 1, vrchatUsername: 1 }, $set: { updatedAt: new Date() } }
+            { $unset: { vrchatUserId: 1, vrchatUsername: 1, vrchatAgeVerified: 1 }, $set: { updatedAt: new Date() } }
+          ).catch(() => null);
+          await Admin.updateMany(
+            { discordId: interaction.user.id },
+            { $unset: { vrchatUserId: 1, vrchatUsername: 1, vrchatAgeVerified: 1 }, $set: { updatedAt: new Date() } }
           ).catch(() => null);
           await VRChatLinkRequest.updateMany(
             { discordUserId: interaction.user.id, status: 'pending' },
             { $set: { status: 'cancelled', updatedAt: new Date() } }
           ).catch(() => null);
-          return interaction.editReply({ content: '✅ Your VRChat account has been disconnected from Discord.' }).catch(() => null);
+          return interaction.editReply({ content: '✅ Your VRChat account has been disconnected.' }).catch(() => null);
         }
 
         if (sub === 'start') {
