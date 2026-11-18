@@ -1615,6 +1615,10 @@ async function startServer() {
       if (!payload?.vrchatUserId) throw new Error('vrchatUserId is required');
       return serviceClient.checkVRChatMutuals(payload.vrchatUserId, payload.groupId, payload.guildId);
     }
+    if (command === 'vrchat-age-sync') {
+      if (!payload?.vrchatUserId) throw new Error('vrchatUserId is required');
+      return serviceClient.syncVRChatAgeVerified(payload.vrchatUserId);
+    }
     if (command === 'send-group-log') {
       if (!payload?.message) throw new Error('Log message is required');
       const sentViaWorker = await serviceClient.sendGuildLogMessage({

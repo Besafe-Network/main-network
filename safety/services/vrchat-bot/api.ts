@@ -14,6 +14,7 @@ import {
   runVRChatMutualsCheck,
   sendVRChatFriendRequest,
   syncAllVRChatBots,
+  syncVRChatAgeVerifiedFlag,
   unbanUserFromVRChatGroup,
 } from './vrchat-client';
 import { getVRChatShardTopology, scanAndBanBlacklistedUsers } from './worker';
@@ -147,6 +148,11 @@ export function createVRChatWorkerCommands() {
     'complete-link': async ({ discordUserId, adminId, requestId }: { discordUserId?: string; adminId?: string; requestId?: string }) => {
       if (!discordUserId && !adminId && !requestId) throw new Error('discordUserId, adminId, or requestId is required');
       return completeVRChatLinkRequest({ discordUserId, adminId, requestId });
+    },
+    'age-sync': async ({ vrchatUserId }: { vrchatUserId?: string }) => {
+      if (!vrchatUserId) throw new Error('vrchatUserId is required');
+      const verified = await syncVRChatAgeVerifiedFlag(vrchatUserId);
+      return { ageVerified: verified };
     },
     announce: async ({ groupIds, title, text, imageId, sendNotification, visibility }: {
       groupIds?: string[];

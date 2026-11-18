@@ -1201,17 +1201,22 @@ export async function completeVRChatLinkRequest(options: {
   const reqAdminId = String(linkReq.adminId || adminId || '').trim();
 
   if (reqDiscordId) {
+    const discordUserUpdate: any = {
+      $set: {
+        vrchatUserId: targetId,
+        vrchatUsername: displayName,
+        vrchatAgeVerified: profile.ageVerified === true,
+        updatedAt: new Date(),
+      },
+      $setOnInsert: { id: reqDiscordId, username: '', reputation: 0, warnings: [] },
+    };
+    if (profile.ageVerified) {
+      discordUserUpdate.$set.isAgeVerified = true;
+      discordUserUpdate.$set.ageVerifiedAt = new Date();
+    }
     await User.findOneAndUpdate(
       { id: reqDiscordId },
-      {
-        $set: {
-          vrchatUserId: targetId,
-          vrchatUsername: displayName,
-          vrchatAgeVerified: profile.ageVerified === true,
-          updatedAt: new Date(),
-        },
-        $setOnInsert: { id: reqDiscordId, username: '', reputation: 0, warnings: [] },
-      },
+      discordUserUpdate,
       { upsert: true }
     ).catch(() => null);
 
@@ -1239,9 +1244,21 @@ export async function completeVRChatLinkRequest(options: {
     // If the admin also has a linked Discord ID, mirror the VRChat link onto the User doc
     const adminDoc = await Admin.findById(reqAdminId).select('discordId').catch(() => null);
     if (adminDoc?.discordId) {
+      const mirrorUpdate: any = {
+        $set: {
+          vrchatUserId: targetId,
+          vrchatUsername: displayName,
+          vrchatAgeVerified: profile.ageVerified === true,
+          updatedAt: new Date(),
+        },
+      };
+      if (profile.ageVerified) {
+        mirrorUpdate.$set.isAgeVerified = true;
+        mirrorUpdate.$set.ageVerifiedAt = new Date();
+      }
       await User.findOneAndUpdate(
         { id: adminDoc.discordId },
-        { $set: { vrchatUserId: targetId, vrchatUsername: displayName, updatedAt: new Date() } }
+        mirrorUpdate
       ).catch(() => null);
     }
   }

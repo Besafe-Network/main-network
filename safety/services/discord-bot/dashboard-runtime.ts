@@ -2394,8 +2394,21 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
           }
         }
 
-        const user = await User.findOne({ id: interaction.user.id });
-        if (!user?.isAgeVerified) {
+        let user = await User.findOne({ id: interaction.user.id });
+        let hasAgeProof = !!(user?.isAgeVerified || user?.vrchatAgeVerified === true);
+        // Linked VRChat users may predate the flag sync — check VRChat live once
+        if (!hasAgeProof && user?.vrchatUserId) {
+          try {
+            const syncRes = await serviceClient.requestDashboardCommand('vrchat-age-sync', { vrchatUserId: user.vrchatUserId });
+            if (syncRes?.ageVerified) {
+              user = await User.findOne({ id: interaction.user.id });
+              hasAgeProof = !!(user?.isAgeVerified || user?.vrchatAgeVerified === true);
+            }
+          } catch (e) {
+            console.warn('[agerole] VRChat age sync failed:', e?.message || e);
+          }
+        }
+        if (!hasAgeProof) {
           const cfg = await SystemConfig.findOne({ id: 'main' });
           const isAgeVerifyOff = Boolean(cfg?.disableAgeVerifyCommand) || Boolean(guildData?.settings?.disableAgeVerifyCommand);
           try {
@@ -3733,7 +3746,7 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
     }
 
     // New age role auto-assign
-    if (user?.isAgeVerified && guildData?.settings?.ageRoleEnabled && guildData?.settings?.autoAssignAgeRole) {
+    if ((user?.isAgeVerified || user?.vrchatAgeVerified === true) && guildData?.settings?.ageRoleEnabled && guildData?.settings?.autoAssignAgeRole) {
       const roleId = guildData.settings.ageRoleId;
       if (roleId && (user.dob || user.vrchatAgeVerified)) {
         const isAdult = isAdultByDob(user.dob) || user.vrchatAgeVerified === true;

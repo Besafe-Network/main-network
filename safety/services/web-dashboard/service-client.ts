@@ -104,6 +104,10 @@ export class ServiceClient {
     return workerSocketHub.request('vrchat-bot', 'complete-link', payload);
   }
 
+  async syncVRChatAgeVerified(vrchatUserId: string): Promise<any> {
+    return workerSocketHub.request('vrchat-bot', 'age-sync', { vrchatUserId });
+  }
+
   async broadcastVRChatAnnouncement(payload: {
     groupIds: string[];
     title: string;
