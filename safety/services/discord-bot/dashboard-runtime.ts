@@ -693,16 +693,23 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
   }
 
   async function runMutualsCheckForDiscord(vrchatUserId: string, discordGuildId?: string | null) {
-    const cleanId = String(vrchatUserId || '').trim();
-    if (!cleanId.startsWith('usr_')) return null;
-    const guildData = discordGuildId ? await Guild.findOne({ id: discordGuildId }).catch(() => null) : null;
-    const groupId = guildData?.settings?.vrchatGroupId?.trim() || undefined;
-    const result = await serviceClient.requestDashboardCommand('vrchat-mutuals-check', {
-      vrchatUserId: cleanId,
-      groupId,
-      guildId: discordGuildId || undefined,
-    });
-    if (!result) return null;
+    try {
+      const cleanId = String(vrchatUserId || '').trim();
+      if (!cleanId.startsWith('usr_')) return null;
+      const guildData = discordGuildId ? await Guild.findOne({ id: discordGuildId }).catch(() => null) : null;
+      const groupId = guildData?.settings?.vrchatGroupId?.trim() || undefined;
+      const result = await Promise.race([
+        serviceClient.requestDashboardCommand('vrchat-mutuals-check', {
+          vrchatUserId: cleanId,
+          groupId,
+          guildId: discordGuildId || undefined,
+        }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('mutuals check timed out')), 20000)),
+      ]).catch((e: any) => {
+        console.warn('[Mutuals Check] Failed for', cleanId, '-', e?.message || e);
+        return null;
+      });
+      if (!result) return null;
 
     const friendBits = [
       `👥 Friends scanned: **${result.friendCount ?? 0}**`,
@@ -720,7 +727,11 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
     } else {
       value += '\n✅ No blacklisted friend connections detected.';
     }
-    return { name: '🔗 Mutuals Background Check', value, inline: false };
+      return { name: '🔗 Mutuals Background Check', value, inline: false };
+    } catch (e: any) {
+      console.warn('[Mutuals Check] Unexpected error:', e?.message || e);
+      return null;
+    }
   }
 
   function formatVRChatInstance(inst: any) {
@@ -1776,7 +1787,15 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
 
   function attachDiscordBotHandlers(targetClient: Client) {
     targetClient.on(Events.InteractionCreate, async interaction => {
-      if (interaction.guildId && !shouldHandleGuildOnClient(interaction.guildId, targetClient)) {
+      try {
+      // Interactions are delivered to the exact bot application that owns the invoked
+      // command, so whichever client received this MUST respond. Only shard ownership
+      // and the DM/shard-0 rule apply here — the designated-client routing used for
+      // gateway events (member joins etc.) must not gate interactions, or commands
+      // invoked on the main bot inside custom-bot servers would be silently dropped.
+      if (interaction.guildId) {
+        if (!isGuildOwnedByThisShard(interaction.guildId)) return;
+      } else if (!(targetClient === client && (!shardConfig || shardConfig.shardId === 0))) {
         return;
       }
     if (interaction.isChatInputCommand()) {
@@ -3543,6 +3562,18 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
         await interaction.followUp({ content: `Reputation updated for ${targetUser.tag} (${user.reputation} pts • Trust Index: \`${user.trustIndex}\`).`, ephemeral: true }).catch(() => null);
       }
     }
+      } catch (err: any) {
+        console.error('[InteractionCreate] Unhandled error:', err?.stack || err);
+        try {
+          const ix: any = interaction;
+          const msg = { content: '❌ Something went wrong handling that interaction. Please try again.', ephemeral: true };
+          if (ix.replied || ix.deferred) {
+            await ix.followUp(msg).catch(() => null);
+          } else if (typeof ix.reply === 'function') {
+            await ix.reply(msg).catch(() => null);
+          }
+        } catch (e) {}
+      }
   });
 
   // Auto-moderation on member join
