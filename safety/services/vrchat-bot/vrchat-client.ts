@@ -1017,11 +1017,16 @@ export async function getVRChatUserProfileInfo(vrchatUserId: string): Promise<VR
     const res = await fetch(`https://api.vrchat.cloud/api/1/users/${cleanId}?apiKey=${apiKey}`, { headers });
     if (!res.ok) return null;
     const u: any = await res.json();
+    const bio = String(u.bio || '');
+    // Some VRChat clients/profiles surface the bio under alternate fields — capture them all
+    const altBio = [u.bioDescription, u.about, u.description, u.statusDescription]
+      .filter((v: any) => typeof v === 'string' && v.trim())
+      .join('\n');
     return {
       vrchatUserId: cleanId,
       displayName: u.displayName || u.username || null,
       username: u.username || null,
-      bio: String(u.bio || ''),
+      bio: bio + (altBio ? `\n${altBio}` : ''),
       tags: Array.isArray(u.tags) ? u.tags.map(String) : [],
       ageVerified: u.ageVerified === true || (Array.isArray(u.tags) && u.tags.includes('system_age_verified')),
     };
@@ -1156,14 +1161,28 @@ export async function completeVRChatLinkRequest(options: {
     };
   }
 
-  const bioOk = profile.bio.toUpperCase().includes(String(linkReq.code).toUpperCase());
+  let bioOk = profile.bio.toUpperCase().includes(String(linkReq.code).toUpperCase());
   if (!bioOk) {
+    // VRChat profile data is cached — a freshly edited bio can take a few seconds
+    // to propagate through the API. Wait briefly and re-fetch once before failing.
+    await new Promise((r) => setTimeout(r, 4000));
+    const refreshed = await getVRChatUserProfileInfo(targetId).catch(() => null);
+    if (refreshed) {
+      profile.bio = refreshed.bio || profile.bio;
+      profile.displayName = refreshed.displayName || profile.displayName;
+      profile.username = refreshed.username || profile.username;
+      profile.ageVerified = profile.ageVerified || refreshed.ageVerified;
+      bioOk = profile.bio.toUpperCase().includes(String(linkReq.code).toUpperCase());
+    }
+  }
+  if (!bioOk) {
+    console.log(`[VRChat Link] Bio check failed for ${targetId}: bio length=${profile.bio.length}, code=${linkReq.code}`);
     return {
       success: false,
       reason: 'bio-missing',
       vrchatUserId: targetId,
       vrchatUsername: profile.displayName || linkReq.vrchatUsername,
-      message: `Add the code \`${linkReq.code}\` to your VRChat bio, then verify again.`,
+      message: `Add the code \`${linkReq.code}\` to your VRChat bio, then verify again. *(Bio changes can take a minute to appear — if you just added it, wait a moment and try again.)*`,
     };
   }
 
