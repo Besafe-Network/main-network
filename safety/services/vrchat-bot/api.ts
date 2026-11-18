@@ -10,6 +10,7 @@ import {
   getVRChatBots,
   leaveVRChatGroupIfOrphaned,
   resolveVRChatUserBySearch,
+  runVRChatMutualsCheck,
   syncAllVRChatBots,
   unbanUserFromVRChatGroup,
 } from './vrchat-client';
@@ -132,6 +133,10 @@ export function createVRChatWorkerCommands() {
     'resolve-user': async ({ searchQuery }: { searchQuery?: string }) => {
       if (!searchQuery) throw new Error('searchQuery is required');
       return resolveVRChatUserBySearch(searchQuery);
+    },
+    'mutuals-check': async ({ vrchatUserId, groupId, guildId }: { vrchatUserId?: string; groupId?: string; guildId?: string }) => {
+      if (!vrchatUserId) throw new Error('vrchatUserId is required');
+      return runVRChatMutualsCheck(vrchatUserId, { groupId, guildId });
     },
     announce: async ({ groupIds, title, text, imageId, sendNotification, visibility }: {
       groupIds?: string[];

@@ -277,6 +277,8 @@ export const guildSchema = new mongoose.Schema({
     vrchatBotEnabled: { type: Boolean, default: false },
     vrchatGroupId: { type: String, default: "" },
     vrchatAutoBanEnabled: { type: Boolean, default: true },
+    vrchatMutualsCheckEnabled: { type: Boolean, default: false },
+    vrchatMutualsCheckChannelId: { type: String, default: "" },
     autoUnbanDiscordEnabled: { type: Boolean, default: true },
     autoUnbanVRChatEnabled: { type: Boolean, default: true },
     customBanlistId: { type: String, default: "" },
@@ -388,6 +390,15 @@ export const vrchatAlertTrackerSchema = new mongoose.Schema({
   vrchatUserId: { type: String, required: true },
   groupId: { type: String, required: true },
   lastWarnedAt: { type: Date, default: Date.now }
+});
+
+// --- VRChat Group Member Snapshot (join detection for mutuals checks) ---
+export const vrChatGroupMemberSnapshotSchema = new mongoose.Schema({
+  groupId: { type: String, required: true, unique: true, index: true },
+  memberIds: [String],
+  checkedUserIds: [String],
+  initialized: { type: Boolean, default: false },
+  updatedAt: { type: Date, default: Date.now }
 });
 
 // --- Verification Request Schema ---
@@ -581,6 +592,7 @@ export const GeoRule = mongoose.model('GeoRule', geoRuleSchema);
 export const ApiBot = mongoose.model('ApiBot', apiBotSchema);
 export const TrustedCompany = mongoose.model('TrustedCompany', trustedCompanySchema);
 export const ShardGuildCount = mongoose.model('ShardGuildCount', shardGuildCountSchema);
+export const VRChatGroupMemberSnapshot = mongoose.model('VRChatGroupMemberSnapshot', vrChatGroupMemberSnapshotSchema);
 
 // Safe Save Helpers
 export async function safeSaveReport(report: any) {

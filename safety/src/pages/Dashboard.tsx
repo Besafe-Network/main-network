@@ -4965,6 +4965,37 @@ export default function Dashboard() {
                           </div>
                         </div>
                       </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2 border-t border-zinc-100">
+                        <div className="space-y-2">
+                          <label className="block font-mono text-[10px] uppercase font-bold text-zinc-500">Mutuals Background Check</label>
+                          <label className="relative inline-flex items-center cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={editingGuildSettings.vrchatMutualsCheckEnabled}
+                              onChange={(e) => setEditingGuildSettings({ ...editingGuildSettings, vrchatMutualsCheckEnabled: e.target.checked })}
+                              className="sr-only peer"
+                            />
+                            <div className="w-11 h-6 bg-zinc-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
+                            <span className="ml-3 font-mono text-xs text-zinc-600 uppercase font-semibold">
+                              {editingGuildSettings.vrchatMutualsCheckEnabled ? 'Enabled' : 'Disabled'}
+                            </span>
+                          </label>
+                          <p className="text-[10px] text-zinc-400 font-serif leading-tight">When someone joins your linked VRChat group, scan their friends &amp; mutual groups against the blacklist. Matches are reported — never auto-banned.</p>
+                        </div>
+
+                        <SearchableDiscordSelect
+                          label="Mutuals Alert Channel"
+                          value={editingGuildSettings.vrchatMutualsCheckChannelId}
+                          onChange={(val) => setEditingGuildSettings({ ...editingGuildSettings, vrchatMutualsCheckChannelId: val })}
+                          options={guildChannels.map(c => ({ id: c.id, name: c.name, subtext: c.parentName ? `Category: ${c.parentName}` : undefined }))}
+                          type="channel"
+                          isLoading={isLoadingDiscordData}
+                          error={discordDataError}
+                          onRefresh={() => selectedGuild && fetchDiscordDataForGuild(selectedGuild.id)}
+                          placeholder="Select alert channel..."
+                        />
+                      </div>
                     </div>
 
                     {/* SECTION 2: AUTOMATED BAN SETTINGS */}
@@ -5764,6 +5795,8 @@ export default function Dashboard() {
                                 vrchatBotEnabled: g.settings?.vrchatBotEnabled ?? false,
                                 vrchatGroupId: g.settings?.vrchatGroupId ?? '',
                                 vrchatAutoBanEnabled: g.settings?.vrchatAutoBanEnabled ?? true,
+                                vrchatMutualsCheckEnabled: g.settings?.vrchatMutualsCheckEnabled ?? false,
+                                vrchatMutualsCheckChannelId: g.settings?.vrchatMutualsCheckChannelId ?? '',
                                 customBanlistId: g.settings?.customBanlistId ?? '',
                                 banlistSelectionMode: g.settings?.banlistSelectionMode ?? 'global',
                                 customBotEnabled: g.settings?.customBotEnabled ?? false,

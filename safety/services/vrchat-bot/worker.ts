@@ -6,6 +6,7 @@ import {
   UserVRChatGroup,
   User,
   Log,
+  VRChatGroupMemberSnapshot,
 } from '../shared/models';
 import {
   getBotForGroup,
@@ -17,13 +18,17 @@ import {
   syncAllVRChatBots,
   knownGroupBansCache,
   markUserBannedInGroupCache,
+  requestVRChatDashboardCommand,
+  runVRChatMutualsCheck,
 } from './vrchat-client';
 import { config as appConfig } from '../shared/config';
 import { resolve4 } from 'node:dns/promises';
 
 let scanInterval: NodeJS.Timeout | null = null;
 let displayNamesInterval: NodeJS.Timeout | null = null;
+let mutualsInterval: NodeJS.Timeout | null = null;
 let isScanning = false;
+let isCheckingMutuals = false;
 
 export async function getVRChatShardTopology() {
   const instanceId = appConfig.vrcInstanceId;
@@ -281,6 +286,172 @@ export async function scanAndBanBlacklistedUsers(
   }
 }
 
+async function fetchVRChatGroupMemberIds(
+  groupId: string,
+  headers: any,
+  apiKey: string
+): Promise<string[]> {
+  const ids = new Set<string>();
+  for (let offset = 0; offset < 2000; offset += 100) {
+    const res = await fetch(
+      `https://api.vrchat.cloud/api/1/groups/${groupId}/members?n=100&offset=${offset}&apiKey=${apiKey}`,
+      { headers }
+    );
+    if (!res.ok) break;
+    const page = (await res.json()) as any[];
+    if (!Array.isArray(page) || page.length === 0) break;
+    for (const m of page) {
+      const id = String(m?.userId || m?.id || '').trim();
+      if (id.startsWith('usr_')) ids.add(id);
+    }
+    if (page.length < 100) break;
+  }
+  return [...ids];
+}
+
+export async function checkNewVRChatGroupMembers(
+  instanceId?: number,
+  totalInstances?: number
+) {
+  if (isCheckingMutuals) return;
+  isCheckingMutuals = true;
+
+  try {
+    const topology = await getVRChatShardTopology();
+    const activeInstanceId = instanceId ?? topology.instanceId;
+    const activeInstanceCount = totalInstances ?? topology.totalInstances;
+
+    const config = await SystemConfig.findOne({ id: 'main' });
+    if (!config || !config.vrchatBotEnabled) return;
+    if ((!config.vrchatUsername || !config.vrchatPassword) && !config.vrchatCookie) return;
+
+    const guilds = await Guild.find({
+      'settings.vrchatBotEnabled': true,
+      'settings.vrchatMutualsCheckEnabled': true,
+      'settings.vrchatGroupId': { $nin: ['', null] },
+    }).catch(() => []);
+    if (guilds.length === 0) return;
+
+    const guildsByGroup = new Map<string, any[]>();
+    for (const g of guilds) {
+      const gid = String(g.settings?.vrchatGroupId || '').trim();
+      if (!gid) continue;
+      const list = guildsByGroup.get(gid) || [];
+      list.push(g);
+      guildsByGroup.set(gid, list);
+    }
+
+    const allGroups = [...guildsByGroup.keys()].sort();
+    const assignedGroups = allGroups.filter((_, idx) => idx % activeInstanceCount === activeInstanceId);
+    if (assignedGroups.length === 0) return;
+
+    for (const groupId of assignedGroups) {
+      const groupGuilds = guildsByGroup.get(groupId) || [];
+      let bot;
+      try {
+        bot = await getBotForGroup(config, groupId);
+      } catch {
+        continue;
+      }
+
+      let headers: any, apiKey: string;
+      try {
+        const auth = await getVRChatAuthHeadersForBot(bot, config);
+        headers = auth.headers;
+        apiKey = auth.apiKey;
+      } catch {
+        continue;
+      }
+
+      let memberIds: string[] = [];
+      try {
+        memberIds = await fetchVRChatGroupMemberIds(groupId, headers, apiKey);
+      } catch {
+        continue;
+      }
+      if (memberIds.length === 0) continue;
+
+      const snapshot = await VRChatGroupMemberSnapshot.findOneAndUpdate(
+        { groupId },
+        { $setOnInsert: { groupId, memberIds: [], checkedUserIds: [], initialized: false } },
+        { upsert: true, new: true }
+      ).catch(() => null);
+      if (!snapshot) continue;
+
+      const currentSet = new Set(memberIds);
+      const knownSet = new Set(snapshot.memberIds || []);
+      const checkedSet = new Set(snapshot.checkedUserIds || []);
+
+      if (!snapshot.initialized) {
+        // First sighting: record the baseline roster without flagging existing members
+        snapshot.memberIds = memberIds.slice(0, 5000);
+        snapshot.initialized = true;
+        snapshot.updatedAt = new Date();
+        await snapshot.save().catch(() => null);
+        continue;
+      }
+
+      const newMemberIds = memberIds.filter((id) => !knownSet.has(id) && !checkedSet.has(id)).slice(0, 10);
+
+      for (const newId of newMemberIds) {
+        try {
+          const result = await runVRChatMutualsCheck(newId, {
+            groupId,
+            guildId: groupGuilds[0]?.id,
+          });
+          checkedSet.add(newId);
+
+          if (result.blacklistedFriends.length > 0) {
+            const friendLines = result.blacklistedFriends
+              .slice(0, 10)
+              .map((f) => `• **${f.displayName}** (\`${f.vrchatUserId}\`) — ${f.reason}`)
+              .join('\n');
+            const embed = {
+              title: '🔗 Mutuals Background Check — Blacklisted Connection Found',
+              color: 0xf59e0b,
+              description: `A new member of your linked VRChat group has **${result.blacklistedFriends.length} friend(s) on the blacklist**. No action was taken automatically — review and decide.`,
+              fields: [
+                { name: '👤 New Member', value: `**${result.displayName || 'Unknown'}** (\`${result.vrchatUserId}\`)`, inline: true },
+                { name: '👥 Friends Checked', value: `\`${result.friendCount}\``, inline: true },
+                { name: '🤝 Mutual Groups', value: `\`${result.mutualGroupCount}\`${result.mutualGroupNames.length ? ` (${result.mutualGroupNames.slice(0, 3).join(', ')})` : ''}`, inline: true },
+                { name: '🚨 Blacklisted Friends', value: friendLines + (result.blacklistedFriends.length > 10 ? `\n*...and ${result.blacklistedFriends.length - 10} more*` : ''), inline: false },
+              ],
+              footer: { text: 'BeSafe Network • VRChat Mutuals Background Check' },
+              timestamp: new Date().toISOString(),
+            };
+
+            for (const g of groupGuilds) {
+              const channelId =
+                g.settings?.vrchatMutualsCheckChannelId ||
+                g.settings?.staffChannelId ||
+                g.settings?.logChannelId;
+              if (!channelId) continue;
+              await requestVRChatDashboardCommand('send-group-log', {
+                guildId: g.id,
+                channelId,
+                message: { embeds: [embed] },
+              }).catch(() => null);
+            }
+          }
+        } catch (e: any) {
+          checkedSet.add(newId);
+        }
+        await new Promise((r) => setTimeout(r, 800));
+      }
+
+      // Persist roster: keep current members + recently checked users
+      snapshot.memberIds = memberIds.slice(0, 5000);
+      snapshot.checkedUserIds = [...checkedSet].slice(-5000);
+      snapshot.updatedAt = new Date();
+      await snapshot.save().catch(() => null);
+    }
+  } catch (err: any) {
+    console.error('[VRChat Worker] Error during mutuals join check:', err?.message || err);
+  } finally {
+    isCheckingMutuals = false;
+  }
+}
+
 export async function checkAndSyncVRChatDisplayNames() {
   try {
     const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
@@ -359,16 +530,20 @@ export function startVRChatWorkers(
 
   setTimeout(() => scanAndBanBlacklistedUsers(), 15000);
   setTimeout(checkAndSyncVRChatDisplayNames, 45000);
+  setTimeout(checkNewVRChatGroupMembers, 60000);
 
   // Intervals
   scanInterval = setInterval(() => scanAndBanBlacklistedUsers(), 2 * 60 * 1000);
   displayNamesInterval = setInterval(checkAndSyncVRChatDisplayNames, 12 * 60 * 60 * 1000);
+  mutualsInterval = setInterval(checkNewVRChatGroupMembers, 5 * 60 * 1000);
 }
 
 export function stopVRChatWorkers() {
   if (scanInterval) clearInterval(scanInterval);
   if (displayNamesInterval) clearInterval(displayNamesInterval);
+  if (mutualsInterval) clearInterval(mutualsInterval);
   scanInterval = null;
   displayNamesInterval = null;
+  mutualsInterval = null;
   console.log('[VRChat Worker] Background worker tasks stopped.');
 }

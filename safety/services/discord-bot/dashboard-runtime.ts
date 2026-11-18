@@ -692,6 +692,37 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
     return { groupId };
   }
 
+  async function runMutualsCheckForDiscord(vrchatUserId: string, discordGuildId?: string | null) {
+    const cleanId = String(vrchatUserId || '').trim();
+    if (!cleanId.startsWith('usr_')) return null;
+    const guildData = discordGuildId ? await Guild.findOne({ id: discordGuildId }).catch(() => null) : null;
+    const groupId = guildData?.settings?.vrchatGroupId?.trim() || undefined;
+    const result = await serviceClient.requestDashboardCommand('vrchat-mutuals-check', {
+      vrchatUserId: cleanId,
+      groupId,
+      guildId: discordGuildId || undefined,
+    });
+    if (!result) return null;
+
+    const friendBits = [
+      `👥 Friends scanned: **${result.friendCount ?? 0}**`,
+      `🤝 Mutual groups: **${result.mutualGroupCount ?? 0}**`,
+    ];
+    let value = friendBits.join(' • ');
+    if (result.mutualGroupNames?.length) {
+      value += `\n*Shared: ${result.mutualGroupNames.slice(0, 3).join(', ')}*`;
+    }
+    if (Array.isArray(result.blacklistedFriends) && result.blacklistedFriends.length > 0) {
+      const lines = result.blacklistedFriends.slice(0, 5).map((f: any) =>
+        `• **${f.displayName || 'Unknown'}** (\`${f.vrchatUserId}\`) — ${f.reason}`
+      );
+      value += `\n\n🚨 **${result.blacklistedFriends.length} blacklisted friend connection(s):**\n${lines.join('\n')}${result.blacklistedFriends.length > 5 ? `\n*...and ${result.blacklistedFriends.length - 5} more*` : ''}`;
+    } else {
+      value += '\n✅ No blacklisted friend connections detected.';
+    }
+    return { name: '🔗 Mutuals Background Check', value, inline: false };
+  }
+
   function formatVRChatInstance(inst: any) {
     const location = inst?.location || '';
     const instanceId = inst?.instanceId || location.split(':')[1] || '';
@@ -1439,6 +1470,9 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
           .setFooter({ text: 'BeSafe Network • Global Threat & Identity Registry' })
           .setTimestamp();
 
+        const mutualsField = await runMutualsCheckForDiscord(cleaned, interaction.guildId).catch(() => null);
+        if (mutualsField) embed.addFields(mutualsField);
+
         try {
           return await interaction.editReply({ embeds: [embed] });
         } catch (e) {
@@ -1560,6 +1594,12 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
         });
       }
     }
+
+    const checkVrcId = cleaned.startsWith('usr_')
+      ? cleaned
+      : String(user?.vrchatUserId || banCase?.vrchatAccounts?.[0]?.vrchatUserId || '').trim();
+    const mutualsField = await runMutualsCheckForDiscord(checkVrcId, interaction.guildId).catch(() => null);
+    if (mutualsField) embed.addFields(mutualsField);
 
     if (isDangerous) {
       const appUrl = process.env.APP_URL || 'https://besafe.network';

@@ -23,6 +23,11 @@ export function setVRChatWorkerSocket(socket: Socket) {
   vrchatWorkerSocket = socket;
 }
 
+export async function requestVRChatDashboardCommand(command: string, payload: any = {}): Promise<any> {
+  if (!vrchatWorkerSocket) throw new Error('VRChat worker is not connected to the dashboard');
+  return requestDashboardCommand(vrchatWorkerSocket, command, payload);
+}
+
 export async function notifyVRChatGroupLogChannel(
   _groupId: string,
   _message: string,
@@ -849,6 +854,146 @@ export async function resolveVRChatUserBySearch(searchQuery: string): Promise<{ 
   } catch {
     return null;
   }
+}
+
+async function fetchVRChatUserFriends(vrchatUserId: string, headers: any, apiKey: string): Promise<any[]> {
+  const friends: any[] = [];
+  for (let offset = 0; offset < 500; offset += 100) {
+    const res = await fetch(`https://api.vrchat.cloud/api/1/users/${vrchatUserId}/friends?n=100&offset=${offset}&apiKey=${apiKey}`, { headers });
+    if (!res.ok) break;
+    const page = (await res.json()) as any[];
+    if (!Array.isArray(page) || page.length === 0) break;
+    friends.push(...page);
+    if (page.length < 100) break;
+  }
+  return friends;
+}
+
+async function fetchVRChatMutualGroups(vrchatUserId: string, headers: any, apiKey: string): Promise<any[]> {
+  try {
+    const res = await fetch(`https://api.vrchat.cloud/api/1/users/${vrchatUserId}/mutuals/groups?n=100&apiKey=${apiKey}`, { headers });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+
+export interface VRChatMutualsCheckResult {
+  vrchatUserId: string;
+  displayName: string | null;
+  friendCount: number;
+  mutualGroupCount: number;
+  mutualGroupNames: string[];
+  blacklistedFriends: Array<{ vrchatUserId: string; displayName: string; reason: string }>;
+  checkedAt: string;
+}
+
+export async function runVRChatMutualsCheck(
+  vrchatUserId: string,
+  options: { groupId?: string; guildId?: string } = {}
+): Promise<VRChatMutualsCheckResult> {
+  const cleanId = String(vrchatUserId || '').trim();
+  if (!cleanId.startsWith('usr_')) throw new Error('A valid VRChat user ID (usr_...) is required');
+
+  const config = await SystemConfig.findOne({ id: 'main' });
+  if (!config) throw new Error('System config not found');
+
+  let bot: any = null;
+  if (options.groupId?.trim()) {
+    bot = await getBotForGroup(config, options.groupId.trim()).catch(() => null);
+  }
+  if (!bot) {
+    const bots = getVRChatBots(config);
+    bot = bots[0] || null;
+  }
+  if (!bot) throw new Error('No VRChat bot account is configured');
+
+  const { headers, apiKey } = await getVRChatAuthHeadersForBot(bot, config);
+
+  // Resolve target profile
+  let displayName: string | null = null;
+  try {
+    const userRes = await fetch(`https://api.vrchat.cloud/api/1/users/${cleanId}?apiKey=${apiKey}`, { headers });
+    if (userRes.ok) {
+      const u: any = await userRes.json();
+      displayName = u.displayName || u.username || null;
+    }
+  } catch {}
+
+  // Build the blacklist relevant to this check (guild-scoped when provided)
+  let guild: any = null;
+  if (options.guildId) {
+    guild = await Guild.findOne({ id: options.guildId }).catch(() => null);
+  }
+  const banReasons = new Map<string, string>();
+  const mode = guild?.settings?.banlistSelectionMode || 'global';
+
+  if (mode === 'global' || mode === 'both') {
+    const activeCases = await BanCase.find({ status: 'active' }).catch(() => []);
+    for (const bCase of activeCases) {
+      for (const va of bCase.vrchatAccounts || []) {
+        const id = String(va?.vrchatUserId || '').trim();
+        if (id.startsWith('usr_') && !banReasons.has(id)) {
+          banReasons.set(id, `Global ban case #${bCase.caseNumber}: ${bCase.reason || 'Blacklisted'}`);
+        }
+      }
+    }
+  }
+  if (guild && (mode === 'custom' || mode === 'both') && guild.settings?.customBanlistId) {
+    const list = await CustomBanlist.findById(guild.settings.customBanlistId).catch(() => null);
+    if (list) {
+      for (const entry of list.entries || []) {
+        const id = String(entry?.targetId || '').trim();
+        if (entry?.type === 'vrchat' && id.startsWith('usr_') && !banReasons.has(id)) {
+          banReasons.set(id, `Custom banlist "${list.name}": ${entry.reason || 'Blacklisted'}`);
+        }
+      }
+    }
+  }
+
+  // Trusted users are never treated as blacklisted
+  if (banReasons.size > 0) {
+    const ids = [...banReasons.keys()];
+    const trusted = await User.find({
+      isTrusted: true,
+      $or: [{ vrchatUserId: { $in: ids } }, { 'vrchatAlts.vrchatUserId': { $in: ids } }],
+    }).select('vrchatUserId vrchatAlts').lean().catch(() => []);
+    for (const t of trusted as any[]) {
+      const allIds = [t.vrchatUserId, ...(t.vrchatAlts || []).map((a: any) => a.vrchatUserId)].filter(Boolean);
+      for (const id of allIds) banReasons.delete(String(id));
+    }
+  }
+
+  const [friends, mutualGroups] = await Promise.all([
+    fetchVRChatUserFriends(cleanId, headers, apiKey).catch(() => [] as any[]),
+    fetchVRChatMutualGroups(cleanId, headers, apiKey),
+  ]);
+
+  const blacklistedFriends = friends
+    .map((f: any) => {
+      const id = String(f?.id || f?.userId || '').trim();
+      const reason = banReasons.get(id);
+      if (!reason) return null;
+      return { vrchatUserId: id, displayName: f.displayName || f.username || id, reason };
+    })
+    .filter(Boolean) as Array<{ vrchatUserId: string; displayName: string; reason: string }>;
+
+  const mutualGroupNames = mutualGroups
+    .map((g: any) => String(g?.name || g?.groupName || ''))
+    .filter(Boolean)
+    .slice(0, 10);
+
+  return {
+    vrchatUserId: cleanId,
+    displayName,
+    friendCount: friends.length,
+    mutualGroupCount: mutualGroups.length,
+    mutualGroupNames,
+    blacklistedFriends,
+    checkedAt: new Date().toISOString(),
+  };
 }
 
 export async function syncAllVRChatBots(config: any) {
