@@ -1014,21 +1014,29 @@ export async function getVRChatUserProfileInfo(vrchatUserId: string): Promise<VR
     const config = await SystemConfig.findOne({ id: 'main' });
     if (!config) return null;
     const { headers, apiKey } = await getVRChatAuthHeaders(config);
-    const res = await fetch(`https://api.vrchat.cloud/api/1/users/${cleanId}?apiKey=${apiKey}`, { headers });
-    if (!res.ok) return null;
-    const u: any = await res.json();
-    const bio = String(u.bio || '');
-    // Some VRChat clients/profiles surface the bio under alternate fields — capture them all
-    const altBio = [u.bioDescription, u.about, u.description, u.statusDescription]
-      .filter((v: any) => typeof v === 'string' && v.trim())
-      .join('\n');
+    const [userRes, profileRes] = await Promise.all([
+      fetch(`https://api.vrchat.cloud/api/1/users/${cleanId}?apiKey=${apiKey}`, { headers }),
+      fetch(`https://api.vrchat.cloud/api/1/profile/${cleanId}?apiKey=${apiKey}`, { headers }).catch(() => null),
+    ]);
+    if (!userRes.ok) return null;
+    const u: any = await userRes.json();
+    const p: any = profileRes && profileRes.ok ? await profileRes.json().catch(() => null) : null;
+    // VRChat stores the visible bio on the /profile endpoint — the /users object
+    // often returns an empty `bio` field, so merge both sources.
+    const bioParts = [
+      String(u.bio || ''),
+      String(p?.bio || ''),
+      [u.bioDescription, u.about, u.description, u.statusDescription, p?.bioDescription]
+        .filter((v: any) => typeof v === 'string' && v.trim())
+        .join('\n'),
+    ].filter((s) => s && s.trim());
     return {
       vrchatUserId: cleanId,
-      displayName: u.displayName || u.username || null,
+      displayName: u.displayName || u.username || p?.displayName || null,
       username: u.username || null,
-      bio: bio + (altBio ? `\n${altBio}` : ''),
+      bio: [...new Set(bioParts)].join('\n'),
       tags: Array.isArray(u.tags) ? u.tags.map(String) : [],
-      ageVerified: u.ageVerified === true || (Array.isArray(u.tags) && u.tags.includes('system_age_verified')),
+      ageVerified: u.ageVerified === true || p?.ageVerified === true || (Array.isArray(u.tags) && u.tags.includes('system_age_verified')),
     };
   } catch {
     return null;
@@ -1176,13 +1184,14 @@ export async function completeVRChatLinkRequest(options: {
     }
   }
   if (!bioOk) {
-    console.log(`[VRChat Link] Bio check failed for ${targetId}: bio length=${profile.bio.length}, code=${linkReq.code}`);
+    const acctLabel = profile.username || profile.displayName || linkReq.vrchatUsername || 'unknown';
+    console.log(`[VRChat Link] Bio check failed for ${targetId}: bio length=${profile.bio.length}, code=${linkReq.code} (account: ${acctLabel})`);
     return {
       success: false,
       reason: 'bio-missing',
       vrchatUserId: targetId,
-      vrchatUsername: profile.displayName || linkReq.vrchatUsername,
-      message: `Add the code \`${linkReq.code}\` to your VRChat bio, then verify again. *(Bio changes can take a minute to appear — if you just added it, wait a moment and try again.)*`,
+      vrchatUsername: acctLabel,
+      message: `Add the code \`${linkReq.code}\` to your VRChat bio on **${acctLabel}**, then verify again. *(Bio changes can take a minute to appear — if you just added it, wait a moment and try again.)*`,
     };
   }
 
