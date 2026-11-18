@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { compressImageFile } from '../utils/imageCompressor';
 import { extractVRChatUserId } from '../utils/vrchatUtils';
+import { ageVerifyLabel, ageVerifyShortLabel } from '../utils/ageUtils';
 import { 
   Shield, 
   LogOut, 
@@ -4544,7 +4545,7 @@ export default function Dashboard() {
 
                       <div className="space-y-1">
                         <label className="block text-[10px] font-mono uppercase opacity-50">Age Verification Flag</label>
-                        <p className="font-bold text-xs">{lookupResult.isAgeVerified ? '✅ VERIFIED 18+' : '❌ UNVERIFIED'}</p>
+                        <p className="font-bold text-xs">{ageVerifyLabel(lookupResult)}</p>
                       </div>
                     </div>
 
@@ -7067,7 +7068,7 @@ export default function Dashboard() {
                                         : 'bg-zinc-100 text-zinc-600 border border-zinc-200'
                                     }`}
                                   >
-                                    {member.isAgeVerified ? '18+ VERIFIED' : 'NOT VERIFIED'}
+                                    {ageVerifyShortLabel(member)}
                                   </span>
                                   <button
                                     type="button"
@@ -7083,7 +7084,7 @@ export default function Dashboard() {
                                         : 'bg-indigo-600 text-white hover:bg-indigo-700'
                                     }`}
                                   >
-                                    {member.isAgeVerified ? 'Revoke 18+' : 'Verify 18+'}
+                                    {member.isAgeVerified ? 'Revoke' : 'Verify'}
                                   </button>
                                 </div>
                               </td>

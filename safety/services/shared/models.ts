@@ -24,6 +24,7 @@ export const userSchema = new mongoose.Schema({
   isAgeVerified: { type: Boolean, default: false },
   dob: Date,
   ageVerifiedAt: Date,
+  vrchatAgeVerified: { type: Boolean, default: false },
   avatarUrl: String,
   savedAvatarUrl: String,
   vrchatUserId: { type: String, default: "" },
@@ -169,6 +170,7 @@ export const adminSchema = new mongoose.Schema({
   isAgeVerified: { type: Boolean, default: false },
   dob: Date,
   ageVerifiedAt: Date,
+  vrchatAgeVerified: { type: Boolean, default: false },
   dawnchatSettings: {
     safetyBridgeEnabled: { type: Boolean, default: true },
     filterSensitivity: { type: String, default: "balanced" },
@@ -401,6 +403,21 @@ export const vrChatGroupMemberSnapshotSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 });
 
+// --- VRChat Account Link Request (Discord-initiated verified linking) ---
+export const vrChatLinkRequestSchema = new mongoose.Schema({
+  discordUserId: { type: String, default: "", index: true },
+  adminId: { type: String, default: "", index: true },
+  vrchatUserId: { type: String, required: true },
+  vrchatUsername: { type: String, default: "" },
+  code: { type: String, required: true },
+  status: { type: String, enum: ['pending', 'completed', 'expired', 'cancelled'], default: 'pending' },
+  expiresAt: { type: Date, required: true },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+});
+vrChatLinkRequestSchema.index({ discordUserId: 1, status: 1 });
+vrChatLinkRequestSchema.index({ vrchatUserId: 1, status: 1 });
+
 // --- Verification Request Schema ---
 export const verificationRequestSchema = new mongoose.Schema({
   userId: { type: String, required: true },
@@ -593,6 +610,7 @@ export const ApiBot = mongoose.model('ApiBot', apiBotSchema);
 export const TrustedCompany = mongoose.model('TrustedCompany', trustedCompanySchema);
 export const ShardGuildCount = mongoose.model('ShardGuildCount', shardGuildCountSchema);
 export const VRChatGroupMemberSnapshot = mongoose.model('VRChatGroupMemberSnapshot', vrChatGroupMemberSnapshotSchema);
+export const VRChatLinkRequest = mongoose.model('VRChatLinkRequest', vrChatLinkRequestSchema);
 
 // Safe Save Helpers
 export async function safeSaveReport(report: any) {
@@ -652,6 +670,17 @@ export async function safeSaveAppeal(appeal: any) {
       throw err;
     }
   }
+}
+
+export function isAdultByDob(dob: any): boolean {
+  if (!dob) return false;
+  const d = new Date(dob);
+  if (isNaN(d.getTime())) return false;
+  const now = new Date();
+  let age = now.getFullYear() - d.getFullYear();
+  const monthDiff = now.getMonth() - d.getMonth();
+  if (monthDiff < 0 || (monthDiff === 0 && now.getDate() < d.getDate())) age--;
+  return age >= 18;
 }
 
 export function extractVRChatGroupId(input: string): string {

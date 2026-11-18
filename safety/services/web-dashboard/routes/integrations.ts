@@ -40,6 +40,7 @@ export function registerIntegrationsRoutes(app: express.Express, context: any) {
   VerificationRequest,
   VRChatAlertTracker,
   VRChatAnnouncementHistory,
+  VRChatLinkRequest,
   cleanupSavedWatchlistAvatars,
   createGuildBackup,
   extractVRChatGroupId,
@@ -2008,6 +2009,7 @@ export function registerIntegrationsRoutes(app: express.Express, context: any) {
         isEmailVerified: !!admin.isEmailVerified,
         passwordSet: admin.passwordSet !== false,
         isAgeVerified: !!(admin.isAgeVerified || discordUserData?.isAgeVerified),
+        vrchatAgeVerified: !!(admin.vrchatAgeVerified || discordUserData?.vrchatAgeVerified),
         dob: admin.dob || discordUserData?.dob || null,
         ageVerifiedAt: admin.ageVerifiedAt || discordUserData?.ageVerifiedAt || null,
         verificationStatus,
@@ -2046,26 +2048,136 @@ export function registerIntegrationsRoutes(app: express.Express, context: any) {
     }
   });
 
-  // VRChat identity link/unlink
+  // VRChat identity link/unlink — verified via friend request + bio code
+  const VRCHAT_LINK_CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  const generateVRChatLinkCode = () =>
+    Array.from({ length: 6 }, () => VRCHAT_LINK_CODE_ALPHABET[Math.floor(Math.random() * VRCHAT_LINK_CODE_ALPHABET.length)]).join('');
+
   app.post('/api/user/link-vrchat', authenticateToken, async (req: any, res) => {
     try {
-      const { vrchatUserId, vrchatUsername } = req.body;
-      if (!vrchatUserId) return res.status(400).json({ error: 'VRChat User ID is required' });
-      const cleaned = extractVRChatUserId(vrchatUserId);
-      const updated = await Admin.findByIdAndUpdate(
-        req.user.id,
-        { $set: { vrchatUserId: cleaned, vrchatUsername: vrchatUsername || '' } },
-        { new: true }
-      ).select('-password');
-      res.json({ success: true, user: updated, message: 'VRChat identity connected!' });
+      const adminUser = await Admin.findById(req.user.id);
+      if (!adminUser) return res.status(404).json({ error: 'User not found' });
+
+      const { vrchatUserId, vrchatUsername } = req.body || {};
+      if (!vrchatUserId && !vrchatUsername) {
+        return res.status(400).json({ error: 'VRChat username, User ID, or profile URL is required' });
+      }
+
+      // Already linked to this same account?
+      if (adminUser.vrchatUserId) {
+        const same = extractVRChatUserId(vrchatUserId || vrchatUsername || '') === adminUser.vrchatUserId
+          || (vrchatUsername && vrchatUsername === adminUser.vrchatUsername);
+        if (same) {
+          return res.json({ success: true, pending: false, user: adminUser, message: 'This VRChat account is already linked.' });
+        }
+        return res.status(400).json({ error: `Your dashboard is already linked to **${adminUser.vrchatUsername || adminUser.vrchatUserId}**. Unlink it first to connect a different account.` });
+      }
+
+      // Resolve to a usr_ ID
+      let resolvedId = extractVRChatUserId(String(vrchatUserId || vrchatUsername || ''));
+      let resolvedName = String(vrchatUsername || '').trim();
+      if (!resolvedId.startsWith('usr_')) {
+        const resolved = await serviceClient.resolveVRChatUserBySearch(resolvedId || resolvedName).catch(() => null);
+        if (resolved?.vrchatUserId) {
+          resolvedId = resolved.vrchatUserId;
+          resolvedName = resolved.vrchatUsername || resolvedName;
+        }
+      }
+      if (!resolvedId.startsWith('usr_')) {
+        return res.status(404).json({ error: 'Could not find that VRChat user. Check the spelling or use their usr_... ID.' });
+      }
+
+      // Reuse an existing pending request or create a new one
+      const adminDiscordId = String(adminUser.discordId || '').trim();
+      let linkReq = await VRChatLinkRequest.findOne({
+        status: 'pending',
+        $or: [{ adminId: String(adminUser._id) }, ...(adminDiscordId ? [{ discordUserId: adminDiscordId }] : [])],
+      }).sort({ createdAt: -1 }).catch(() => null);
+      if (linkReq && linkReq.expiresAt && linkReq.expiresAt.getTime() < Date.now()) {
+        linkReq.status = 'expired';
+        await linkReq.save().catch(() => null);
+        linkReq = null;
+      }
+      if (linkReq && linkReq.vrchatUserId !== resolvedId) {
+        linkReq.status = 'cancelled';
+        await linkReq.save().catch(() => null);
+        linkReq = null;
+      }
+      if (!linkReq) {
+        linkReq = await VRChatLinkRequest.create({
+          discordUserId: adminDiscordId,
+          adminId: String(adminUser._id),
+          vrchatUserId: resolvedId,
+          vrchatUsername: resolvedName,
+          code: generateVRChatLinkCode(),
+          expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+        }).catch(() => null);
+      }
+      if (!linkReq) return res.status(500).json({ error: 'Failed to create a link request' });
+
+      // Send the VRChat friend request (best-effort)
+      const fr = await serviceClient.sendVRChatFriendRequest(resolvedId).catch(() => null);
+
+      res.json({
+        success: true,
+        pending: true,
+        requestId: String(linkReq._id),
+        code: linkReq.code,
+        vrchatUserId: resolvedId,
+        vrchatUsername: resolvedName || linkReq.vrchatUsername,
+        alreadyFriends: fr?.alreadyFriends === true,
+        friendRequestSent: fr?.sent === true || fr?.alreadyRequested === true || fr?.alreadyFriends === true,
+        expiresAt: linkReq.expiresAt,
+        message: 'Verification required: accept the BeSafe bot friend request in VRChat and add the code to your bio.',
+      });
     } catch (e: any) {
-      res.status(500).json({ error: 'Failed to link VRChat identity' });
+      res.status(500).json({ error: 'Failed to start VRChat link' });
+    }
+  });
+
+  app.post('/api/user/link-vrchat/verify', authenticateToken, async (req: any, res) => {
+    try {
+      const adminUser = await Admin.findById(req.user.id);
+      if (!adminUser) return res.status(404).json({ error: 'User not found' });
+
+      const { requestId } = req.body || {};
+      const result = await serviceClient.completeVRChatLink({
+        requestId: requestId || undefined,
+        adminId: String(adminUser._id),
+        discordUserId: String(adminUser.discordId || '') || undefined,
+      });
+
+      if (result?.success) {
+        const updated = await Admin.findById(req.user.id).select('-password');
+        return res.json({
+          success: true,
+          user: updated,
+          vrchatUserId: result.vrchatUserId,
+          vrchatUsername: result.vrchatUsername,
+          ageVerified: result.ageVerified === true,
+          message: result.message || 'VRChat identity connected!',
+        });
+      }
+      res.status(400).json({
+        success: false,
+        reason: result?.reason,
+        error: result?.message || 'Verification failed',
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: 'Failed to verify VRChat link' });
     }
   });
 
   app.post('/api/user/unlink-vrchat', authenticateToken, async (req: any, res) => {
     try {
+      const adminUser = await Admin.findById(req.user.id).select('discordId').catch(() => null);
       await Admin.findByIdAndUpdate(req.user.id, { $unset: { vrchatUserId: 1, vrchatUsername: 1 } });
+      const cancelOr: any[] = [{ adminId: String(req.user.id) }];
+      if (adminUser?.discordId) cancelOr.push({ discordUserId: String(adminUser.discordId) });
+      await VRChatLinkRequest.updateMany(
+        { status: 'pending', $or: cancelOr },
+        { $set: { status: 'cancelled', updatedAt: new Date() } }
+      ).catch(() => null);
       res.json({ success: true, message: 'VRChat identity disconnected.' });
     } catch (e: any) {
       res.status(500).json({ error: 'Failed to unlink VRChat identity' });

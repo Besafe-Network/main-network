@@ -20,6 +20,7 @@ import {
   markUserBannedInGroupCache,
   requestVRChatDashboardCommand,
   runVRChatMutualsCheck,
+  syncVRChatAgeVerifiedFlag,
 } from './vrchat-client';
 import { config as appConfig } from '../shared/config';
 import { resolve4 } from 'node:dns/promises';
@@ -27,8 +28,10 @@ import { resolve4 } from 'node:dns/promises';
 let scanInterval: NodeJS.Timeout | null = null;
 let displayNamesInterval: NodeJS.Timeout | null = null;
 let mutualsInterval: NodeJS.Timeout | null = null;
+let ageSyncInterval: NodeJS.Timeout | null = null;
 let isScanning = false;
 let isCheckingMutuals = false;
+let isSyncingAgeFlags = false;
 
 export async function getVRChatShardTopology() {
   const instanceId = appConfig.vrcInstanceId;
@@ -512,6 +515,55 @@ export async function checkAndSyncVRChatDisplayNames() {
   }
 }
 
+export async function syncVRChatAgeVerificationFlags(
+  instanceId?: number,
+  totalInstances?: number
+) {
+  if (isSyncingAgeFlags) return;
+  isSyncingAgeFlags = true;
+  try {
+    const topology = await getVRChatShardTopology();
+    const activeInstanceId = instanceId ?? topology.instanceId;
+    const activeInstanceCount = totalInstances ?? topology.totalInstances;
+
+    const config = await SystemConfig.findOne({ id: 'main' });
+    if (!config || !config.vrchatBotEnabled) return;
+    if ((!config.vrchatUsername || !config.vrchatPassword) && !config.vrchatCookie) return;
+
+    const staleCutoff = new Date(Date.now() - 6 * 60 * 60 * 1000);
+    const candidates = await User.find({
+      vrchatUserId: { $nin: ['', null] },
+      isAgeVerified: { $ne: true },
+      $or: [
+        { vrchatLastCheckedAt: { $exists: false } },
+        { vrchatLastCheckedAt: { $lte: staleCutoff } },
+      ],
+    }).limit(50 * activeInstanceCount).catch(() => []);
+    const users = candidates.filter((_, idx) => idx % activeInstanceCount === activeInstanceId).slice(0, 50);
+
+    for (const user of users) {
+      try {
+        const verified = await syncVRChatAgeVerifiedFlag(user.vrchatUserId);
+        if (verified) {
+          await new Log({
+            action: 'VRCHAT_AGE_FLAG_SYNCED',
+            adminId: 'VRCHAT_BOT',
+            targetId: user.id,
+            details: `Age verification flag synced from VRChat system_age_verified tag for linked account ${user.vrchatUsername || user.vrchatUserId} (${user.vrchatUserId}).`,
+          }).save().catch(() => null);
+        }
+      } catch {}
+      user.vrchatLastCheckedAt = new Date();
+      await user.save().catch(() => null);
+      await new Promise((r) => setTimeout(r, 1200));
+    }
+  } catch (err: any) {
+    console.error('[VRChat Worker] Error syncing age verification flags:', err?.message || err);
+  } finally {
+    isSyncingAgeFlags = false;
+  }
+}
+
 export function startVRChatWorkers(
   instanceId = appConfig.vrcInstanceId,
   totalInstances = appConfig.vrcTotalInstances
@@ -531,19 +583,23 @@ export function startVRChatWorkers(
   setTimeout(() => scanAndBanBlacklistedUsers(), 15000);
   setTimeout(checkAndSyncVRChatDisplayNames, 45000);
   setTimeout(checkNewVRChatGroupMembers, 60000);
+  setTimeout(() => syncVRChatAgeVerificationFlags(), 90000);
 
   // Intervals
   scanInterval = setInterval(() => scanAndBanBlacklistedUsers(), 2 * 60 * 1000);
   displayNamesInterval = setInterval(checkAndSyncVRChatDisplayNames, 12 * 60 * 60 * 1000);
   mutualsInterval = setInterval(checkNewVRChatGroupMembers, 5 * 60 * 1000);
+  ageSyncInterval = setInterval(syncVRChatAgeVerificationFlags, 6 * 60 * 60 * 1000);
 }
 
 export function stopVRChatWorkers() {
   if (scanInterval) clearInterval(scanInterval);
   if (displayNamesInterval) clearInterval(displayNamesInterval);
   if (mutualsInterval) clearInterval(mutualsInterval);
+  if (ageSyncInterval) clearInterval(ageSyncInterval);
   scanInterval = null;
   displayNamesInterval = null;
   mutualsInterval = null;
+  ageSyncInterval = null;
   console.log('[VRChat Worker] Background worker tasks stopped.');
 }

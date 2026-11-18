@@ -44,7 +44,7 @@ function getAppBaseUrl(): string {
 }
 
 export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardConfig) {
-  const { SystemConfig, Guild, cleanupUserDatabaseForTrustedOnly, syncAllBansAcrossPlatforms, findUserByQuery, serviceClient, resolveDiscordUser, getWatchlistAvatar, User, VerificationRequest, Log, ReputationRating, Admin, LinkCode, checkAndAutoVerifyFromDiscord, createGuildBackup, ServerBackup, restoreGuildBackup, extractVRChatUserId, Report, safeSaveReport, notifyAdmins, BanCase, CustomBanlist, getAllVRChatAccounts, serviceName, setSyncDiscordCommandsRef } = context;
+  const { SystemConfig, Guild, cleanupUserDatabaseForTrustedOnly, syncAllBansAcrossPlatforms, findUserByQuery, serviceClient, resolveDiscordUser, getWatchlistAvatar, User, VerificationRequest, Log, ReputationRating, Admin, LinkCode, VRChatLinkRequest, checkAndAutoVerifyFromDiscord, createGuildBackup, ServerBackup, restoreGuildBackup, extractVRChatUserId, isAdultByDob, Report, safeSaveReport, notifyAdmins, BanCase, CustomBanlist, getAllVRChatAccounts, serviceName, setSyncDiscordCommandsRef } = context;
   const clientOptions: any = {
     intents: [
       GatewayIntentBits.Guilds,
@@ -864,6 +864,27 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
       ),
 
     new SlashCommandBuilder()
+      .setName('vrchat-link')
+      .setDescription('Link your VRChat account to Discord (verified via friend request + bio code)')
+      .addSubcommand(sub =>
+        sub.setName('start')
+          .setDescription('Begin linking — sends a VRChat friend request')
+          .addStringOption(opt =>
+            opt.setName('user')
+              .setDescription('VRChat username, usr_ ID, or profile URL')
+              .setRequired(true)
+          )
+      )
+      .addSubcommand(sub =>
+        sub.setName('verify')
+          .setDescription('Verify the link after accepting the friend request and adding the bio code')
+      )
+      .addSubcommand(sub =>
+        sub.setName('unlink')
+          .setDescription('Disconnect your linked VRChat account')
+      ),
+
+    new SlashCommandBuilder()
       .setName('report')
       .setDescription('Submit a safety report via our web portal')
       .addUserOption(option => option.setName('target').setDescription('User to report (optional)').setRequired(false))
@@ -1571,7 +1592,13 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
         { name: '🛡️ Trust Index', value: `\`${trustIndex}\``, inline: true },
         { name: '📊 Community Reputation', value: `**${user.reputation || 0}** pts`, inline: true },
         { name: '⚠️ Recorded Warnings', value: `**${user.warnings?.length || 0}**`, inline: true },
-        { name: '🔞 Age Verification', value: user.isAgeVerified ? '✅ 18+ Verified' : '❌ Unverified', inline: true },
+        { name: '🔞 Age Verification', value: !user.isAgeVerified
+        ? '❌ Unverified'
+        : (isAdultByDob(user.dob) || user.vrchatAgeVerified === true)
+          ? '✅ Age Verified (18+)'
+          : user.dob
+            ? '✅ Age Verified (Under 18)'
+            : '✅ Age Verified', inline: true },
         { name: '⚡ Security Status', value: statusStr, inline: false }
       );
 
@@ -1633,7 +1660,14 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
       }
     }
 
-    const status = user.isAgeVerified ? '✅ VERIFIED' : '❌ NOT VERIFIED';
+    const isAdult = isAdultByDob(user.dob) || user.vrchatAgeVerified === true;
+    const status = !user.isAgeVerified
+      ? '❌ NOT VERIFIED'
+      : isAdult
+        ? '✅ VERIFIED (18+)'
+        : user.dob
+          ? '✅ VERIFIED (UNDER 18)'
+          : '✅ VERIFIED';
     let ageInfo = 'N/A';
     if (user.isAgeVerified && user.dob) {
       const year = user.dob.getFullYear();
@@ -1750,7 +1784,7 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
 
       if (commandName === 'help') {
         return interaction.reply({
-          content: 'Use `/info` for BeSafe Network information. Commands include `/check`, `/report`, `/setup`, `/verify`, `/link`, `/vote`, `/age-verify`, `/backup`, `/radio`, `/favorites`, `/reputation`, and moderation tools.',
+          content: 'Use `/info` for BeSafe Network information. Commands include `/check`, `/report`, `/setup`, `/verify`, `/link`, `/vrchat-link`, `/vote`, `/age-verify`, `/backup`, `/radio`, `/favorites`, `/reputation`, and moderation tools.',
           ephemeral: true,
         });
       }
@@ -2144,6 +2178,128 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
         }
       }
 
+      if (commandName === 'vrchat-link') {
+        const sub = options.getSubcommand();
+        try {
+          if (!interaction.deferred && !interaction.replied) {
+            await interaction.deferReply({ ephemeral: true });
+          }
+        } catch (e) {}
+
+        if (sub === 'unlink') {
+          await User.findOneAndUpdate(
+            { id: interaction.user.id },
+            { $unset: { vrchatUserId: 1, vrchatUsername: 1 }, $set: { updatedAt: new Date() } }
+          ).catch(() => null);
+          await VRChatLinkRequest.updateMany(
+            { discordUserId: interaction.user.id, status: 'pending' },
+            { $set: { status: 'cancelled', updatedAt: new Date() } }
+          ).catch(() => null);
+          return interaction.editReply({ content: '✅ Your VRChat account has been disconnected from Discord.' }).catch(() => null);
+        }
+
+        if (sub === 'start') {
+          const query = (options.getString('user') || '').trim();
+          if (!query) {
+            return interaction.editReply({ content: '❌ Please provide your VRChat username, `usr_` ID, or profile URL.' }).catch(() => null);
+          }
+
+          // Resolve to a usr_ ID
+          let vrchatUserId = '';
+          let vrchatUsername = '';
+          const directId = extractVRChatUserId(query);
+          if (directId.startsWith('usr_')) {
+            vrchatUserId = directId;
+          } else {
+            const resolved = await serviceClient.requestDashboardCommand('vrchat-resolve-user', { searchQuery: query }).catch(() => null);
+            if (resolved?.vrchatUserId) {
+              vrchatUserId = resolved.vrchatUserId;
+              vrchatUsername = resolved.vrchatUsername || '';
+            }
+          }
+          if (!vrchatUserId) {
+            return interaction.editReply({ content: `❌ Could not find a VRChat user matching **${query}**. Check the spelling or use their \`usr_...\` ID.` }).catch(() => null);
+          }
+
+          // Already linked to this or another Discord account?
+          const existingLink = await User.findOne({ vrchatUserId }).catch(() => null);
+          if (existingLink && existingLink.id !== interaction.user.id) {
+            return interaction.editReply({ content: '❌ That VRChat account is already linked to a different Discord account.' }).catch(() => null);
+          }
+          if (existingLink?.id === interaction.user.id) {
+            return interaction.editReply({ content: `✅ **${existingLink.vrchatUsername || vrchatUserId}** is already linked to your Discord account.` }).catch(() => null);
+          }
+
+          // Reuse an existing pending request or create a new one
+          const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+          let linkReq = await VRChatLinkRequest.findOne({ discordUserId: interaction.user.id, status: 'pending' })
+            .sort({ createdAt: -1 })
+            .catch(() => null);
+          if (linkReq && linkReq.expiresAt && linkReq.expiresAt.getTime() < Date.now()) {
+            linkReq.status = 'expired';
+            await linkReq.save().catch(() => null);
+            linkReq = null;
+          }
+          if (linkReq && linkReq.vrchatUserId !== vrchatUserId) {
+            linkReq.status = 'cancelled';
+            await linkReq.save().catch(() => null);
+            linkReq = null;
+          }
+          if (!linkReq) {
+            const code = Array.from({ length: 6 }, () => CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)]).join('');
+            linkReq = await VRChatLinkRequest.create({
+              discordUserId: interaction.user.id,
+              vrchatUserId,
+              vrchatUsername,
+              code,
+              expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+            }).catch(() => null);
+          }
+          if (!linkReq) {
+            return interaction.editReply({ content: '❌ Failed to create a link request. Please try again.' }).catch(() => null);
+          }
+
+          // Send the VRChat friend request
+          const fr = await serviceClient.requestDashboardCommand('vrchat-friend-request', { vrchatUserId }).catch((e: any) => ({ sent: false, error: e?.message }));
+
+          const steps = [
+            `1️⃣ **Accept the friend request** from the BeSafe bot in VRChat${fr?.alreadyFriends ? ' *(you are already friends)*' : ''}.`,
+            `2️⃣ **Add this code to your VRChat bio:** \`${linkReq.code}\``,
+            `3️⃣ Run **\`/vrchat-link verify\`** here in Discord.`,
+          ];
+          if (fr?.sent === false && !fr?.alreadyFriends && !fr?.alreadyRequested) {
+            steps.unshift(`⚠️ *Friend request could not be sent automatically (${fr?.error || 'unknown error'}) — send a friend request to the BeSafe bot manually if needed.*`);
+          }
+
+          const embed = new EmbedBuilder()
+            .setTitle('🔗 Link Your VRChat Account')
+            .setDescription(`**${vrchatUsername || vrchatUserId}** (\`${vrchatUserId}\`)\n\n${steps.join('\n')}\n\n⏱️ This code expires <t:${Math.floor(linkReq.expiresAt.getTime() / 1000)}:R>.`)
+            .setColor(0x8b5cf6);
+          return interaction.editReply({ embeds: [embed] }).catch(() => null);
+        }
+
+        if (sub === 'verify') {
+          const result = await serviceClient.requestDashboardCommand('vrchat-complete-link', { discordUserId: interaction.user.id }).catch((e: any) => ({ success: false, message: e?.message || 'Verification failed' }));
+          if (result?.success) {
+            const embed = new EmbedBuilder()
+              .setTitle('✅ VRChat Account Linked')
+              .setDescription(`${result.message || 'Your VRChat account is now linked.'}\n\nYour VRChat identity is now connected — bans, warnings, and trust checks will include this account.`)
+              .setColor(0x10b981);
+            return interaction.editReply({ embeds: [embed] }).catch(() => null);
+          }
+          const reasonText = result?.reason === 'not-friends'
+            ? 'You need to accept the BeSafe bot\'s friend request in VRChat first.'
+            : result?.reason === 'bio-missing'
+              ? 'The verification code is not in your VRChat bio yet.'
+              : result?.reason === 'expired'
+                ? 'Your link code expired — run `/vrchat-link start` again.'
+                : '';
+          return interaction.editReply({
+            content: `❌ ${result?.message || 'Verification failed.'}${reasonText ? `\n${reasonText}` : ''}`
+          }).catch(() => null);
+        }
+      }
+
       if (commandName === 'age-verify') {
         const config = await SystemConfig.findOne({ id: 'main' });
         const isGlobalDisabled = Boolean(config?.disableAgeVerifyCommand);
@@ -2235,8 +2391,9 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
           }
         }
 
-        // Check if 18+
-        if (!user.dob) {
+        // 18+ role requires proof of adulthood: DOB calculation or VRChat age-verified tag
+        const vrchatAdult = user.vrchatAgeVerified === true;
+        if (!user.dob && !vrchatAdult) {
           try {
             return await interaction.editReply({ content: 'Verification data incomplete. Please re-verify.' });
           } catch (e) {
@@ -2244,9 +2401,7 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
             return;
           }
         }
-        const age = new Date().getFullYear() - user.dob.getFullYear();
-        const m = new Date().getMonth() - user.dob.getMonth();
-        const isAdult = age > 18 || (age === 18 && m >= 0);
+        const isAdult = isAdultByDob(user.dob) || vrchatAdult;
 
         if (!isAdult) {
           try {
@@ -3549,11 +3704,9 @@ export function createDashboardDiscordRuntime(context: any, shardConfig?: ShardC
     // New age role auto-assign
     if (user?.isAgeVerified && guildData?.settings?.ageRoleEnabled && guildData?.settings?.autoAssignAgeRole) {
       const roleId = guildData.settings.ageRoleId;
-      if (roleId && user.dob) {
-        const age = new Date().getFullYear() - user.dob.getFullYear();
-        const m = new Date().getMonth() - user.dob.getMonth();
-        const isAdult = age > 18 || (age === 18 && m >= 0);
-        
+      if (roleId && (user.dob || user.vrchatAgeVerified)) {
+        const isAdult = isAdultByDob(user.dob) || user.vrchatAgeVerified === true;
+
         if (isAdult) {
           try {
             await member.roles.add(roleId);

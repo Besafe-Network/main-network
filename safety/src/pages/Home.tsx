@@ -24,7 +24,10 @@ import {
   UserCheck,
   Building2,
   Server,
-  Award
+  Award,
+  Link2,
+  Users,
+  Power
 } from 'lucide-react';
 import ApiKeyApplication from '../components/ApiKeyApplication';
 import { Link } from 'react-router-dom';
@@ -178,8 +181,8 @@ export default function Home() {
         />
         <FeatureCard 
           icon={<UserX className="w-6 h-6" />}
-          title="Age Verification"
-          description="Secure ID and live selfie verification portal with full privacy to ensure verified adult-only access."
+          title="All-Ages Verification"
+          description="Secure ID and live selfie verification open to every age. Verified users under 18 keep their verified status; 18+ roles are only granted when your birth date confirms adulthood."
         />
       </section>
 
@@ -194,7 +197,7 @@ export default function Home() {
             <h2 className="text-3xl sm:text-4xl md:text-5xl font-bold uppercase tracking-tighter text-[#141414] dark:text-white">Community Safety Tools</h2>
           </div>
           <p className="font-mono text-xs opacity-60 text-zinc-600 dark:text-zinc-400 max-w-md">
-            Modern community defense tools: custom bot client isolation, multi-platform banlist linking, and automated unban synchronization.
+            Modern community defense tools: verified cross-platform account linking, custom bot isolation, mutuals vetting, and emergency instance controls.
           </p>
         </div>
 
@@ -274,12 +277,54 @@ export default function Home() {
             <div className="w-12 h-12 bg-[#141414] dark:bg-zinc-800 text-white flex items-center justify-center font-bold">
               <UserCheck className="w-6 h-6" />
             </div>
-            <h3 className="text-xl font-bold uppercase tracking-tight text-[#141414] dark:text-white">Manual Age Verification</h3>
+            <h3 className="text-xl font-bold uppercase tracking-tight text-[#141414] dark:text-white">Tiered Age Verification & Role Gates</h3>
             <p className="font-mono text-xs opacity-70 text-zinc-700 dark:text-zinc-300 leading-relaxed">
-              Give 18+ roles safely with encrypted photo ID and live selfie verification. Reviews are handled manually by administrators, ensuring privacy and preventing leaks.
+              Give 18+ roles safely with encrypted photo ID and live selfie verification — or link a VRChat account whose system_age_verified tag confirms adulthood. Every age can verify; server owners choose who gets 18+ roles, and under-18 verified users are never labeled or granted adult access.
             </p>
             <div className="pt-2 border-t border-gray-100 dark:border-zinc-800 font-mono text-[10px] text-zinc-800 dark:text-zinc-300 uppercase font-bold flex items-center gap-1">
-              <CheckCircle2 className="w-3.5 h-3.5" /> Instant Privacy-Preserving Deletion
+              <CheckCircle2 className="w-3.5 h-3.5" /> DOB-Based 18+ Role Grants Only
+            </div>
+          </div>
+
+          {/* Verified VRChat Account Linking */}
+          <div className="border-2 border-[#141414] dark:border-zinc-700 p-8 space-y-4 bg-white dark:bg-zinc-900 shadow-[6px_6px_0px_0px_rgba(20,20,20,1)] dark:shadow-[6px_6px_0px_0px_rgba(0,0,0,0.5)] hover:translate-x-1 hover:-translate-y-1 transition-all">
+            <div className="w-12 h-12 bg-indigo-600 text-white flex items-center justify-center font-bold">
+              <Link2 className="w-6 h-6" />
+            </div>
+            <h3 className="text-xl font-bold uppercase tracking-tight text-[#141414] dark:text-white">Verified VRChat Linking</h3>
+            <p className="font-mono text-xs opacity-70 text-zinc-700 dark:text-zinc-300 leading-relaxed">
+              Link your Discord or dashboard account to VRChat with proof of ownership: accept the bot friend request and place a unique verification code in your VRChat bio. Linked accounts automatically inherit VRChat age-verification status.
+            </p>
+            <div className="pt-2 border-t border-gray-100 dark:border-zinc-800 font-mono text-[10px] text-indigo-600 dark:text-indigo-400 uppercase font-bold flex items-center gap-1">
+              <CheckCircle2 className="w-3.5 h-3.5" /> Friend Request + Bio Code Proof
+            </div>
+          </div>
+
+          {/* Mutuals Background Check */}
+          <div className="border-2 border-[#141414] dark:border-zinc-700 p-8 space-y-4 bg-white dark:bg-zinc-900 shadow-[6px_6px_0px_0px_rgba(20,20,20,1)] dark:shadow-[6px_6px_0px_0px_rgba(0,0,0,0.5)] hover:translate-x-1 hover:-translate-y-1 transition-all">
+            <div className="w-12 h-12 bg-teal-600 text-white flex items-center justify-center font-bold">
+              <Users className="w-6 h-6" />
+            </div>
+            <h3 className="text-xl font-bold uppercase tracking-tight text-[#141414] dark:text-white">Mutuals Background Check</h3>
+            <p className="font-mono text-xs opacity-70 text-zinc-700 dark:text-zinc-300 leading-relaxed">
+              Vet new VRChat group members by scanning their friends and mutual groups against global and custom blacklists. Server owners pick the alert channel — matches post a staff alert without auto-banning anyone.
+            </p>
+            <div className="pt-2 border-t border-gray-100 dark:border-zinc-800 font-mono text-[10px] text-teal-600 dark:text-teal-400 uppercase font-bold flex items-center gap-1">
+              <CheckCircle2 className="w-3.5 h-3.5" /> Alert-Only, Never Auto-Bans
+            </div>
+          </div>
+
+          {/* Emergency Instance Management */}
+          <div className="border-2 border-[#141414] dark:border-zinc-700 p-8 space-y-4 bg-white dark:bg-zinc-900 shadow-[6px_6px_0px_0px_rgba(20,20,20,1)] dark:shadow-[6px_6px_0px_0px_rgba(0,0,0,0.5)] hover:translate-x-1 hover:-translate-y-1 transition-all">
+            <div className="w-12 h-12 bg-rose-600 text-white flex items-center justify-center font-bold">
+              <Power className="w-6 h-6" />
+            </div>
+            <h3 className="text-xl font-bold uppercase tracking-tight text-[#141414] dark:text-white">Emergency Instance Control</h3>
+            <p className="font-mono text-xs opacity-70 text-zinc-700 dark:text-zinc-300 leading-relaxed">
+              Moderators of servers with a linked VRChat group can list active group instances and remotely shut down raided or compromised instances from Discord — with a confirmation step before anything closes.
+            </p>
+            <div className="pt-2 border-t border-gray-100 dark:border-zinc-800 font-mono text-[10px] text-rose-600 dark:text-rose-400 uppercase font-bold flex items-center gap-1">
+              <CheckCircle2 className="w-3.5 h-3.5" /> /instances & /close-instance
             </div>
           </div>
         </div>

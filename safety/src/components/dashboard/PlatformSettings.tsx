@@ -50,6 +50,8 @@ export const PlatformSettings: React.FC<PlatformSettingsProps> = ({
   const [vrchatUserIdInput, setVrchatUserIdInput] = useState(profile?.vrchatUserId || '');
   const [vrchatUsernameInput, setVrchatUsernameInput] = useState(profile?.vrchatUsername || '');
   const [isLinkingVRChat, setIsLinkingVRChat] = useState(false);
+  const [isVerifyingVRChat, setIsVerifyingVRChat] = useState(false);
+  const [vrchatPending, setVrchatPending] = useState<{ requestId: string; code: string; vrchatUserId: string; vrchatUsername: string; expiresAt?: string } | null>(null);
   const [vrchatSuccess, setVrchatSuccess] = useState('');
   const [vrchatError, setVrchatError] = useState('');
 
@@ -123,8 +125,9 @@ export const PlatformSettings: React.FC<PlatformSettingsProps> = ({
   // --- VRChat Handlers ---
   const handleLinkVRChat = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!vrchatUserIdInput.trim()) {
-      setVrchatError('Please provide your VRChat User ID (starts with usr_)');
+    const query = vrchatUserIdInput.trim() || vrchatUsernameInput.trim();
+    if (!query) {
+      setVrchatError('Please provide your VRChat User ID (usr_...), username, or profile URL');
       return;
     }
     setIsLinkingVRChat(true);
@@ -144,19 +147,64 @@ export const PlatformSettings: React.FC<PlatformSettingsProps> = ({
         })
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to link VRChat identity');
-      setVrchatSuccess('VRChat identity connected successfully!');
-      if (profile) {
-        onProfileUpdated({
-          ...profile,
-          vrchatUserId: vrchatUserIdInput.trim(),
-          vrchatUsername: vrchatUsernameInput.trim()
+      if (!res.ok) throw new Error(data.error || 'Failed to start VRChat link');
+
+      if (data.pending) {
+        setVrchatPending({
+          requestId: data.requestId,
+          code: data.code,
+          vrchatUserId: data.vrchatUserId,
+          vrchatUsername: data.vrchatUsername || '',
+          expiresAt: data.expiresAt,
         });
+        setVrchatSuccess('');
+      } else {
+        setVrchatSuccess('VRChat identity connected successfully!');
+        if (profile) {
+          onProfileUpdated({
+            ...profile,
+            vrchatUserId: vrchatUserIdInput.trim(),
+            vrchatUsername: vrchatUsernameInput.trim()
+          });
+        }
       }
     } catch (err: any) {
       setVrchatError(err.message || 'Failed to link VRChat');
     } finally {
       setIsLinkingVRChat(false);
+    }
+  };
+
+  const handleVerifyVRChatLink = async () => {
+    if (!vrchatPending) return;
+    setIsVerifyingVRChat(true);
+    setVrchatError('');
+    setVrchatSuccess('');
+    try {
+      const token = localStorage.getItem('gg_token') || localStorage.getItem('adminToken') || '';
+      const res = await fetch('/api/user/link-vrchat/verify', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ requestId: vrchatPending.requestId })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Verification failed');
+      setVrchatPending(null);
+      setVrchatSuccess(data.message || 'VRChat identity connected successfully!');
+      if (profile) {
+        onProfileUpdated({
+          ...profile,
+          vrchatUserId: data.vrchatUserId || vrchatPending.vrchatUserId,
+          vrchatUsername: data.vrchatUsername || vrchatPending.vrchatUsername
+        });
+      }
+    } catch (err: any) {
+      setVrchatError(err.message || 'Verification failed');
+    } finally {
+      setIsVerifyingVRChat(false);
     }
   };
 
@@ -170,6 +218,7 @@ export const PlatformSettings: React.FC<PlatformSettingsProps> = ({
       });
       if (!res.ok) throw new Error('Failed to unlink VRChat');
       setVrchatSuccess('VRChat identity disconnected.');
+      setVrchatPending(null);
       setVrchatUserIdInput('');
       setVrchatUsernameInput('');
       if (profile) {
@@ -461,16 +510,60 @@ export const PlatformSettings: React.FC<PlatformSettingsProps> = ({
               </div>
             )}
 
+            {vrchatPending && (
+              <div className="p-4 rounded-xl bg-amber-950/40 border border-amber-800/60 space-y-3">
+                <h4 className="font-mono text-xs font-bold uppercase text-amber-300 flex items-center gap-1.5">
+                  <Shield className="w-4 h-4" />
+                  Verification Required — {vrchatPending.vrchatUsername || vrchatPending.vrchatUserId}
+                </h4>
+                <ol className="list-decimal list-inside space-y-1.5 text-xs text-zinc-300 font-sans">
+                  <li>Accept the <span className="font-semibold text-white">BeSafe bot friend request</span> in VRChat.</li>
+                  <li>Add this code to your <span className="font-semibold text-white">VRChat bio</span>:</li>
+                </ol>
+                <div className="p-3 bg-zinc-900 rounded-xl border border-zinc-700 flex items-center justify-between">
+                  <span className="font-mono text-lg font-bold text-amber-300 tracking-[0.3em]">{vrchatPending.code}</span>
+                  <button
+                    type="button"
+                    onClick={() => { navigator.clipboard.writeText(vrchatPending.code); }}
+                    className="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-mono flex items-center gap-1"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>Copy</span>
+                  </button>
+                </div>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <button
+                    type="button"
+                    onClick={handleVerifyVRChatLink}
+                    disabled={isVerifyingVRChat}
+                    className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-zinc-950 font-mono text-xs font-bold transition-all disabled:opacity-50"
+                  >
+                    {isVerifyingVRChat ? 'Verifying...' : "I've Completed the Steps — Verify"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setVrchatPending(null)}
+                    className="px-4 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-mono text-xs font-bold transition-all"
+                  >
+                    Cancel
+                  </button>
+                </div>
+                <p className="text-[10px] text-zinc-500 font-mono">
+                  Code expires {vrchatPending.expiresAt ? new Date(vrchatPending.expiresAt).toLocaleTimeString() : 'in 15 minutes'}.
+                </p>
+              </div>
+            )}
+
             <form onSubmit={handleLinkVRChat} className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
               <div>
                 <label className="block font-mono text-[11px] text-zinc-400 uppercase font-semibold mb-1">
-                  VRChat User ID (usr_...)
+                  VRChat User ID / Username / URL
                 </label>
                 <input
                   type="text"
                   value={vrchatUserIdInput}
                   onChange={(e) => setVrchatUserIdInput(e.target.value)}
-                  placeholder="usr_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                  placeholder="usr_xxx, username, or vrchat.com/home/user"
                   className="w-full px-3.5 py-2 rounded-xl bg-zinc-800 border border-zinc-700 text-white font-mono text-xs focus:outline-none focus:border-emerald-500"
                 />
               </div>
@@ -491,13 +584,16 @@ export const PlatformSettings: React.FC<PlatformSettingsProps> = ({
               <div className="flex items-end">
                 <button
                   type="submit"
-                  disabled={isLinkingVRChat}
+                  disabled={isLinkingVRChat || !!vrchatPending}
                   className="w-full py-2 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-zinc-950 font-mono text-xs font-bold transition-all disabled:opacity-50 shadow-md"
                 >
-                  {isLinkingVRChat ? 'Saving...' : 'Save VRChat Account'}
+                  {isLinkingVRChat ? 'Starting...' : vrchatPending ? 'Verification Pending' : 'Link VRChat Account'}
                 </button>
               </div>
             </form>
+            <p className="text-[10px] text-zinc-500 font-mono -mt-3">
+              Linking is verified: the BeSafe bot sends a VRChat friend request and you confirm by adding a code to your bio.
+            </p>
           </div>
 
           {/* Standalone VRChat Group Protection Manager (NO DISCORD REQUIRED) */}

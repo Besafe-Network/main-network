@@ -96,6 +96,14 @@ export class ServiceClient {
     return workerSocketHub.request('vrchat-bot', 'mutuals-check', { vrchatUserId, groupId, guildId });
   }
 
+  async sendVRChatFriendRequest(vrchatUserId: string): Promise<any> {
+    return workerSocketHub.request('vrchat-bot', 'friend-request', { vrchatUserId });
+  }
+
+  async completeVRChatLink(payload: { discordUserId?: string; adminId?: string; requestId?: string }): Promise<any> {
+    return workerSocketHub.request('vrchat-bot', 'complete-link', payload);
+  }
+
   async broadcastVRChatAnnouncement(payload: {
     groupIds: string[];
     title: string;

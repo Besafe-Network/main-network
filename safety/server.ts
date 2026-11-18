@@ -1599,6 +1599,18 @@ async function startServer() {
       if (!payload?.groupId || !payload?.location) throw new Error('groupId and location are required');
       return serviceClient.closeVRChatGroupInstance(payload.groupId, payload.location, payload.hardClose !== false);
     }
+    if (command === 'vrchat-resolve-user') {
+      if (!payload?.searchQuery) throw new Error('searchQuery is required');
+      return serviceClient.resolveVRChatUserBySearch(payload.searchQuery);
+    }
+    if (command === 'vrchat-friend-request') {
+      if (!payload?.vrchatUserId) throw new Error('vrchatUserId is required');
+      return serviceClient.sendVRChatFriendRequest(payload.vrchatUserId);
+    }
+    if (command === 'vrchat-complete-link') {
+      if (!payload?.discordUserId && !payload?.adminId && !payload?.requestId) throw new Error('discordUserId, adminId, or requestId is required');
+      return serviceClient.completeVRChatLink(payload);
+    }
     if (command === 'vrchat-mutuals-check') {
       if (!payload?.vrchatUserId) throw new Error('vrchatUserId is required');
       return serviceClient.checkVRChatMutuals(payload.vrchatUserId, payload.groupId, payload.guildId);

@@ -10,7 +10,7 @@ export default function Privacy() {
           Legal Document: 002
         </div>
         <h1 className="text-6xl font-bold uppercase tracking-tighter">Privacy Policy</h1>
-        <p className="opacity-70 font-mono text-xs uppercase tracking-widest">Last Updated: August 11, 2026</p>
+        <p className="opacity-70 font-mono text-xs uppercase tracking-widest">Last Updated: November 13, 2026</p>
       </div>
 
       <div className="border-2 border-[#141414] p-8 md:p-12 space-y-12 bg-white/50">
@@ -29,6 +29,10 @@ export default function Privacy() {
             <li>VRChat User IDs, Group IDs, and VRChat Bot 2FA TOTP credentials for automated group scanning</li>
             <li>Clinical Watchlist entries, internal investigator notes, and evidence dossiers (screenshot links and proof files)</li>
             <li>Report reasons, evidence attachments, and appeal communications</li>
+            <li>Date of birth metadata and age verification status for all verified users of any age (18+ status is derived from DOB)</li>
+            <li>VRChat account links, including friend-request verification codes and profile bio verification checks</li>
+            <li>VRChat friend lists and mutual group memberships scanned during Mutuals Background Checks for new group members</li>
+            <li>Personal radio station favorites saved to your account</li>
             <li>Temporary Age verification document submissions (ID photos and live selfies) — *See Section 04 for Instant Purge Protocol*</li>
             <li>Developer API Key applications, developer emails, and API usage audit metrics</li>
           </ul>
@@ -48,7 +52,10 @@ export default function Privacy() {
             <li>Executing bi-directional auto-unbans across Discord servers and VRChat Groups when appeals pass or bans are revoked</li>
             <li>Calculating user reputation scores and Trust Index tier classifications</li>
             <li>Dispatching real-time warning alerts, audit logs, and role pings to configured staff channels</li>
-            <li>Manually reviewing age verification requests to grant 18+ protected channel access safely</li>
+            <li>Manually reviewing age verification requests and syncing VRChat age-verified status to grant verified and 18+ roles appropriately</li>
+            <li>Vetting new VRChat group members via mutuals/friends scans — matches post staff alerts only and never auto-ban</li>
+            <li>Executing emergency VRChat instance closures requested by server moderators during raids or compromises</li>
+            <li>Playing user-saved radio stations inside Discord voice channels</li>
           </ul>
         </section>
 
@@ -73,6 +80,8 @@ export default function Privacy() {
           <ul className="list-disc pl-6 space-y-2 opacity-80 text-sm">
             <li><strong>Encrypted Integration Credentials:</strong> Custom Discord Bot Tokens, Developer API Secrets, and VRChat 2FA TOTP keys are heavily encrypted in our database using industry-standard AES-256 encryption.</li>
             <li><strong>Automatic Verification Image Purge:</strong> ID photo and selfie base64 payloads are **automatically and permanently purged** (<code className="bg-gray-100 px-1 py-0.5">$unset: &#123; idPhoto: 1, facePhoto: 1 &#125;</code>) from database storage immediately upon an administrator's approval or rejection decision. Only the birth date metadata, verification status, and audit log timestamp remain.</li>
+            <li><strong>Verification Codes:</strong> VRChat account-linking codes expire after 15 minutes and pending requests are deleted once verified, expired, or cancelled.</li>
+            <li><strong>Mutuals Scan Data:</strong> Friend and mutual-group data collected during background checks is processed transiently for matching and is not stored long-term.</li>
             <li><strong>Ban Records & Evidence:</strong> Global ban records and evidence files are retained indefinitely to prevent re-entry of malicious actors into protected networks.</li>
           </ul>
         </section>

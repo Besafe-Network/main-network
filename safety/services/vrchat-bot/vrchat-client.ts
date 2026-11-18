@@ -2,6 +2,7 @@ import cryptoNode from 'crypto';
 import type { Socket } from 'socket.io-client';
 import {
   SystemConfig,
+  Admin,
   Guild,
   User,
   UserVRChatGroup,
@@ -9,6 +10,7 @@ import {
   Log,
   VRChatAlertTracker,
   CustomBanlist,
+  VRChatLinkRequest,
   getAllVRChatAccounts,
 } from '../shared/models';
 import { config as appConfig } from '../shared/config';
@@ -993,6 +995,253 @@ export async function runVRChatMutualsCheck(
     mutualGroupNames,
     blacklistedFriends,
     checkedAt: new Date().toISOString(),
+  };
+}
+
+export interface VRChatUserProfileInfo {
+  vrchatUserId: string;
+  displayName: string | null;
+  username: string | null;
+  bio: string;
+  tags: string[];
+  ageVerified: boolean;
+}
+
+export async function getVRChatUserProfileInfo(vrchatUserId: string): Promise<VRChatUserProfileInfo | null> {
+  const cleanId = String(vrchatUserId || '').trim();
+  if (!cleanId.startsWith('usr_')) return null;
+  try {
+    const config = await SystemConfig.findOne({ id: 'main' });
+    if (!config) return null;
+    const { headers, apiKey } = await getVRChatAuthHeaders(config);
+    const res = await fetch(`https://api.vrchat.cloud/api/1/users/${cleanId}?apiKey=${apiKey}`, { headers });
+    if (!res.ok) return null;
+    const u: any = await res.json();
+    return {
+      vrchatUserId: cleanId,
+      displayName: u.displayName || u.username || null,
+      username: u.username || null,
+      bio: String(u.bio || ''),
+      tags: Array.isArray(u.tags) ? u.tags.map(String) : [],
+      ageVerified: u.ageVerified === true || (Array.isArray(u.tags) && u.tags.includes('system_age_verified')),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function getVRChatFriendStatus(vrchatUserId: string): Promise<{ isFriend: boolean; outgoingRequest: boolean; incomingRequest: boolean } | null> {
+  const cleanId = String(vrchatUserId || '').trim();
+  if (!cleanId.startsWith('usr_')) return null;
+  try {
+    const config = await SystemConfig.findOne({ id: 'main' });
+    if (!config) return null;
+    const { headers, apiKey } = await getVRChatAuthHeaders(config);
+    const res = await fetch(`https://api.vrchat.cloud/api/1/user/${cleanId}/friendStatus?apiKey=${apiKey}`, { headers });
+    if (!res.ok) return null;
+    const data: any = await res.json();
+    return {
+      isFriend: data?.isFriend === true,
+      outgoingRequest: data?.outgoingRequest === true,
+      incomingRequest: data?.incomingRequest === true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function sendVRChatFriendRequest(vrchatUserId: string): Promise<{ sent: boolean; alreadyFriends: boolean; alreadyRequested: boolean; error?: string }> {
+  const cleanId = String(vrchatUserId || '').trim();
+  if (!cleanId.startsWith('usr_')) return { sent: false, alreadyFriends: false, alreadyRequested: false, error: 'Invalid VRChat user ID' };
+  try {
+    const config = await SystemConfig.findOne({ id: 'main' });
+    if (!config) return { sent: false, alreadyFriends: false, alreadyRequested: false, error: 'System config not found' };
+    const { headers, apiKey } = await getVRChatAuthHeaders(config);
+
+    const status = await getVRChatFriendStatus(cleanId);
+    if (status?.isFriend) return { sent: false, alreadyFriends: true, alreadyRequested: false };
+    if (status?.outgoingRequest) return { sent: false, alreadyFriends: false, alreadyRequested: true };
+
+    const res = await fetch(`https://api.vrchat.cloud/api/1/user/${cleanId}/friendRequest?apiKey=${apiKey}`, {
+      method: 'POST',
+      headers,
+    });
+    if (res.ok) return { sent: true, alreadyFriends: false, alreadyRequested: false };
+    const errText = await res.text().catch(() => '');
+    if (res.status === 400 && /already/i.test(errText)) {
+      return { sent: false, alreadyFriends: false, alreadyRequested: true };
+    }
+    return { sent: false, alreadyFriends: false, alreadyRequested: false, error: `HTTP ${res.status}: ${errText.slice(0, 120)}` };
+  } catch (e: any) {
+    return { sent: false, alreadyFriends: false, alreadyRequested: false, error: e?.message || 'Friend request failed' };
+  }
+}
+
+export async function isVRChatAgeVerified(vrchatUserId: string): Promise<boolean> {
+  const profile = await getVRChatUserProfileInfo(vrchatUserId);
+  return profile?.ageVerified === true;
+}
+
+export async function syncVRChatAgeVerifiedFlag(vrchatUserId: string): Promise<boolean> {
+  const verified = await isVRChatAgeVerified(vrchatUserId);
+  if (!verified) return false;
+  const cleanId = String(vrchatUserId || '').trim();
+  await User.updateOne(
+    { $or: [{ vrchatUserId: cleanId }, { 'vrchatAlts.vrchatUserId': cleanId }] },
+    { $set: { isAgeVerified: true, vrchatAgeVerified: true, ageVerifiedAt: new Date(), updatedAt: new Date() } }
+  ).catch(() => null);
+  return true;
+}
+
+export async function completeVRChatLinkRequest(options: {
+  discordUserId?: string;
+  adminId?: string;
+  requestId?: string;
+}): Promise<{
+  success: boolean;
+  reason?: 'no-request' | 'expired' | 'completed' | 'not-friends' | 'bio-missing' | 'vrchat-error';
+  vrchatUserId?: string;
+  vrchatUsername?: string;
+  ageVerified?: boolean;
+  message?: string;
+}> {
+  const discordId = String(options.discordUserId || '').trim();
+  const adminId = String(options.adminId || '').trim();
+  const requestId = String(options.requestId || '').trim();
+  if (!discordId && !adminId && !requestId) {
+    return { success: false, reason: 'no-request', message: 'Missing link identifier' };
+  }
+
+  let linkReq: any = null;
+  if (requestId) {
+    linkReq = await VRChatLinkRequest.findById(requestId).catch(() => null);
+    if (linkReq && linkReq.status !== 'pending') {
+      return { success: false, reason: 'completed', message: 'This link request was already ' + linkReq.status + '.' };
+    }
+  }
+  if (!linkReq) {
+    const query: any = { status: 'pending' };
+    if (discordId) query.discordUserId = discordId;
+    else if (adminId) query.adminId = adminId;
+    linkReq = await VRChatLinkRequest.findOne(query).sort({ createdAt: -1 }).catch(() => null);
+  }
+  if (!linkReq) {
+    return { success: false, reason: 'no-request', message: 'No pending VRChat link request found. Start a new link request first.' };
+  }
+  if (linkReq.expiresAt && linkReq.expiresAt.getTime() < Date.now()) {
+    linkReq.status = 'expired';
+    linkReq.updatedAt = new Date();
+    await linkReq.save().catch(() => null);
+    return { success: false, reason: 'expired', message: 'This link request has expired. Start a new one.' };
+  }
+
+  const targetId = linkReq.vrchatUserId;
+  const [friendStatus, profile] = await Promise.all([
+    getVRChatFriendStatus(targetId),
+    getVRChatUserProfileInfo(targetId),
+  ]);
+  if (!friendStatus || !profile) {
+    return { success: false, reason: 'vrchat-error', message: 'Could not reach VRChat to verify the link. Try again shortly.' };
+  }
+
+  if (!friendStatus.isFriend) {
+    return {
+      success: false,
+      reason: 'not-friends',
+      vrchatUserId: targetId,
+      vrchatUsername: linkReq.vrchatUsername,
+      message: friendStatus.outgoingRequest
+        ? 'Friend request still pending — please accept it in VRChat, add the code to your bio, then verify again.'
+        : 'You must be friends with the BeSafe bot on VRChat to verify. Accept the friend request first.',
+    };
+  }
+
+  const bioOk = profile.bio.toUpperCase().includes(String(linkReq.code).toUpperCase());
+  if (!bioOk) {
+    return {
+      success: false,
+      reason: 'bio-missing',
+      vrchatUserId: targetId,
+      vrchatUsername: profile.displayName || linkReq.vrchatUsername,
+      message: `Add the code \`${linkReq.code}\` to your VRChat bio, then verify again.`,
+    };
+  }
+
+  // Verified — link the account
+  const displayName = profile.displayName || profile.username || linkReq.vrchatUsername || '';
+  const reqDiscordId = String(linkReq.discordUserId || discordId || '').trim();
+  const reqAdminId = String(linkReq.adminId || adminId || '').trim();
+
+  if (reqDiscordId) {
+    await User.findOneAndUpdate(
+      { id: reqDiscordId },
+      {
+        $set: {
+          vrchatUserId: targetId,
+          vrchatUsername: displayName,
+          vrchatAgeVerified: profile.ageVerified === true,
+          updatedAt: new Date(),
+        },
+        $setOnInsert: { id: reqDiscordId, username: '', reputation: 0, warnings: [] },
+      },
+      { upsert: true }
+    ).catch(() => null);
+
+    // Ensure no other Discord account claims this VRChat ID
+    await User.updateMany(
+      { vrchatUserId: targetId, id: { $ne: reqDiscordId } },
+      { $set: { vrchatUserId: '', vrchatUsername: '' } }
+    ).catch(() => null);
+  }
+
+  if (reqAdminId) {
+    const adminUpdate: any = {
+      $set: {
+        vrchatUserId: targetId,
+        vrchatUsername: displayName,
+        vrchatAgeVerified: profile.ageVerified === true,
+        updatedAt: new Date(),
+      },
+    };
+    if (profile.ageVerified) {
+      adminUpdate.$set.isAgeVerified = true;
+      adminUpdate.$set.ageVerifiedAt = new Date();
+    }
+    await Admin.findByIdAndUpdate(reqAdminId, adminUpdate).catch(() => null);
+    // If the admin also has a linked Discord ID, mirror the VRChat link onto the User doc
+    const adminDoc = await Admin.findById(reqAdminId).select('discordId').catch(() => null);
+    if (adminDoc?.discordId) {
+      await User.findOneAndUpdate(
+        { id: adminDoc.discordId },
+        { $set: { vrchatUserId: targetId, vrchatUsername: displayName, updatedAt: new Date() } }
+      ).catch(() => null);
+    }
+  }
+
+  // Auto-sync age verification flag from VRChat system tag
+  const ageVerified = profile.ageVerified === true || (await syncVRChatAgeVerifiedFlag(targetId));
+
+  linkReq.status = 'completed';
+  linkReq.updatedAt = new Date();
+  await linkReq.save().catch(() => null);
+  const cancelQuery: any = { status: 'pending', _id: { $ne: linkReq._id } };
+  if (reqDiscordId) cancelQuery.discordUserId = reqDiscordId;
+  else if (reqAdminId) cancelQuery.adminId = reqAdminId;
+  await VRChatLinkRequest.updateMany(cancelQuery, { $set: { status: 'cancelled', updatedAt: new Date() } }).catch(() => null);
+
+  await new Log({
+    action: 'VRCHAT_ACCOUNT_LINKED',
+    adminId: reqDiscordId || reqAdminId || 'unknown',
+    targetId: reqDiscordId || reqAdminId || 'unknown',
+    details: `Verified VRChat link for ${displayName} (${targetId}).${reqAdminId ? ' Via web dashboard.' : ''} Age verified via VRChat tag: ${ageVerified}.`,
+  }).save().catch(() => null);
+
+  return {
+    success: true,
+    vrchatUserId: targetId,
+    vrchatUsername: displayName,
+    ageVerified,
+    message: `Linked **${displayName}** (\`${targetId}\`)${ageVerified ? ' — 🎂 age verification synced from VRChat' : ''}`,
   };
 }
 

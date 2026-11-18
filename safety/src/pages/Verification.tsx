@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Upload, Camera, CheckCircle, AlertCircle, Loader2, ShieldCheck, Lock, ArrowLeft, Zap, Sparkles, Mail, Check } from 'lucide-react';
 import axios from 'axios';
 import { compressImageFile } from '../utils/imageCompressor';
+import { isAdultByDob } from '../utils/ageUtils';
 
 export default function Verification() {
   const [searchParams] = useSearchParams();
@@ -22,6 +23,8 @@ export default function Verification() {
   const [autoCheckNotice, setAutoCheckNotice] = useState<{ type: 'success' | 'info' | 'error'; text: string } | null>(null);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [isAlreadyVerified, setIsAlreadyVerified] = useState(false);
+  const [verifiedDob, setVerifiedDob] = useState<string | null>(null);
+  const [vrchatAgeVerified, setVrchatAgeVerified] = useState(false);
 
   useEffect(() => {
     // Check if user is logged in
@@ -36,6 +39,8 @@ export default function Verification() {
           setIsLoggedIn(true);
           if (data.email) setEmail(data.email);
           if (data.isAgeVerified) setIsAlreadyVerified(true);
+          if (data.dob) setVerifiedDob(data.dob);
+          if (data.vrchatAgeVerified) setVrchatAgeVerified(true);
           if (!queryUserId) {
             setUserId(data.discordId || data._id || data.username);
             setUsername(data.displayName || data.username);
@@ -153,12 +158,12 @@ export default function Verification() {
           </h1>
           {isAlreadyVerified && (
             <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-mono font-bold bg-emerald-500/10 text-emerald-500 border border-emerald-500/30">
-              <Check className="w-3 h-3" /> 18+ VERIFIED
+              <Check className="w-3 h-3" /> {isAdultByDob(verifiedDob) || vrchatAgeVerified ? '18+ VERIFIED' : 'VERIFIED 18-'}
             </span>
           )}
         </div>
         <p className="font-mono text-xs sm:text-sm text-zinc-600 dark:text-zinc-400 max-w-xl">
-          Complete direct age verification to join BeSafe Network as a verified adult (18+). If your account email matches an already verified Discord user, verification is instantaneous!
+          Complete direct age verification to join BeSafe Network. All ages can verify — users 18+ unlock adult roles and age-restricted servers. If your account email matches an already verified Discord user, verification is instantaneous!
         </p>
       </header>
 
@@ -170,7 +175,9 @@ export default function Verification() {
             <div>
               <h3 className="font-bold text-emerald-950 dark:text-emerald-100 text-sm uppercase">You Are Already Age Verified!</h3>
               <p className="font-mono text-xs text-emerald-800 dark:text-emerald-300">
-                Your account is confirmed adult (18+). You have full access to age-restricted Discord servers, enterprise APIs, and verified roles.
+                {isAdultByDob(verifiedDob) || vrchatAgeVerified
+                  ? 'Your account is confirmed 18+. You have full access to age-restricted Discord servers, enterprise APIs, and verified roles.'
+                  : 'Your account is age verified. Users under 18 keep verified status but do not receive 18+ roles or adult-only access.'}
               </p>
             </div>
           </div>
@@ -255,7 +262,7 @@ export default function Verification() {
               Account Auto-Verified!
             </h2>
             <p className="font-mono text-xs sm:text-sm text-emerald-800 dark:text-emerald-300 max-w-lg mx-auto">
-              {autoVerifyMessage || 'Your account was automatically verified because your email matches an already verified Discord user! You now have full 18+ access across the network.'}
+              {autoVerifyMessage || 'Your account was automatically verified because your email matches an already verified Discord user!'}
             </p>
             <div className="pt-4 flex items-center justify-center gap-4">
               <Link

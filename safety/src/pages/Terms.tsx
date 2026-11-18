@@ -10,7 +10,7 @@ export default function Terms() {
           Legal Document: 001
         </div>
         <h1 className="text-6xl font-bold uppercase tracking-tighter">Terms of Service</h1>
-        <p className="opacity-70 font-mono text-xs uppercase tracking-widest">Last Updated: August 11, 2026</p>
+        <p className="opacity-70 font-mono text-xs uppercase tracking-widest">Last Updated: November 13, 2026</p>
       </div>
 
       <div className="border-2 border-[#141414] p-8 md:p-12 space-y-12 bg-white/50">
@@ -78,6 +78,9 @@ export default function Terms() {
           <ul className="list-disc pl-6 space-y-2 opacity-80 text-sm">
             <li><strong>Automated Banning vs. Staff Warnings:</strong> If auto-banning is disabled, the system dispatches staff warning pings to configured Discord log channels rather than calling group ban APIs.</li>
             <li><strong>2FA Authentication:</strong> Bot credentials or TOTP 2FA keys provided to maintain continuous group scanning are securely handled and rate-limited to comply with VRChat upstream capacity constraints.</li>
+            <li><strong>Verified Account Linking:</strong> Users may link Discord and dashboard accounts to VRChat accounts by accepting the bot's friend request and placing a unique verification code in their VRChat bio. Users must not attempt to link accounts they do not own or manipulate verification codes.</li>
+            <li><strong>Mutuals Background Check:</strong> When enabled by a group owner, new VRChat group members have their friend lists and mutual groups scanned against blacklists. Matches post alerts to the owner-configured channel and never auto-ban. Group owners are responsible for reviewing alerts and taking moderation action under their own policies.</li>
+            <li><strong>Emergency Instance Control:</strong> Server moderators with Manage Server permission may list and remotely close active VRChat group instances during raids or security incidents. Closures require an explicit confirmation step; misuse to grief legitimate instances is prohibited.</li>
           </ul>
         </section>
 
@@ -113,9 +116,11 @@ export default function Terms() {
             Manual Age Verification, Anti-Leak & Anti-Fraud Governance
           </h2>
           <p className="opacity-80 leading-relaxed">
-            The BeSafe Network Age Verification terminal is a manual, high-security review system designed to safeguard age-restricted Discord channels while protecting user privacy against data leaks:
+            The BeSafe Network Age Verification terminal is a manual, high-security review system designed to verify user age while protecting user privacy against data leaks:
           </p>
           <ul className="list-disc pl-6 space-y-2 opacity-80 text-sm">
+            <li><strong>All Ages May Verify:</strong> Age verification is open to users of any age. Users under 18 retain verified status but are never granted 18+ roles or labeled as adults; users 18 and older — determined by their date of birth — receive adult verification and may be granted 18+ roles where server owners enable them.</li>
+            <li><strong>VRChat Age Sync:</strong> Users who link a VRChat account with an active system age-verification tag have their adult status synchronized automatically.</li>
             <li><strong>Manual Human Review:</strong> Verification requests are reviewed manually by authorized platform administrators. No third-party AI image scanners or biometric face matching models process user photos.</li>
             <li><strong>Instant Image Purge:</strong> Upon completing the manual review decision (approval or rejection), the database handler strictly and automatically purges all raw photo payloads (<code className="bg-gray-100 px-1 py-0.5">$unset: &#123; idPhoto: 1, facePhoto: 1 &#125;</code>) from database storage to guarantee zero data leak risk.</li>
             <li><strong>Truthfulness & Zero Tolerance:</strong> Users agree to provide truthful, unaltered documents. Any attempt to submit fraudulent identification, deepfake imagery, stolen documents, or underage records will trigger an immediate permanent Global Ban without appeal eligibility.</li>

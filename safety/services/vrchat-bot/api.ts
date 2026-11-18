@@ -9,8 +9,10 @@ import {
   getVRChatAuthHeadersForBot,
   getVRChatBots,
   leaveVRChatGroupIfOrphaned,
+  completeVRChatLinkRequest,
   resolveVRChatUserBySearch,
   runVRChatMutualsCheck,
+  sendVRChatFriendRequest,
   syncAllVRChatBots,
   unbanUserFromVRChatGroup,
 } from './vrchat-client';
@@ -137,6 +139,14 @@ export function createVRChatWorkerCommands() {
     'mutuals-check': async ({ vrchatUserId, groupId, guildId }: { vrchatUserId?: string; groupId?: string; guildId?: string }) => {
       if (!vrchatUserId) throw new Error('vrchatUserId is required');
       return runVRChatMutualsCheck(vrchatUserId, { groupId, guildId });
+    },
+    'friend-request': async ({ vrchatUserId }: { vrchatUserId?: string }) => {
+      if (!vrchatUserId) throw new Error('vrchatUserId is required');
+      return sendVRChatFriendRequest(vrchatUserId);
+    },
+    'complete-link': async ({ discordUserId, adminId, requestId }: { discordUserId?: string; adminId?: string; requestId?: string }) => {
+      if (!discordUserId && !adminId && !requestId) throw new Error('discordUserId, adminId, or requestId is required');
+      return completeVRChatLinkRequest({ discordUserId, adminId, requestId });
     },
     announce: async ({ groupIds, title, text, imageId, sendNotification, visibility }: {
       groupIds?: string[];
